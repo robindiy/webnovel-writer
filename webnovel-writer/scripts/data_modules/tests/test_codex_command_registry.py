@@ -58,3 +58,33 @@ def test_reject_unknown_command():
         module.parse_command_text("/webnovel-writer:webnovel-unknown")
 
     assert "webnovel-unknown" in str(exc.value)
+
+
+def test_parse_natural_language_init_command():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["请使用 webnovel-writer 初始化一个小说项目。"])
+
+    assert command.name == "webnovel-init"
+    assert command.args == ()
+    assert command.slash_command == "/webnovel-writer:webnovel-init"
+
+
+def test_parse_natural_language_write_command():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["请使用 webnovel-writer 写第 12 章。"])
+
+    assert command.name == "webnovel-write"
+    assert command.args == ("12",)
+    assert command.slash_command == "/webnovel-writer:webnovel-write 12"
+
+
+def test_parse_natural_language_review_range_command():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["请使用 webnovel-writer 审查第 1 到 5 章。"])
+
+    assert command.name == "webnovel-review"
+    assert command.args == ("1-5",)
+    assert command.slash_command == "/webnovel-writer:webnovel-review 1-5"

@@ -49,6 +49,17 @@ def test_prepare_command_returns_choices_when_project_missing(monkeypatch):
     assert any("webnovel-init" in option["description"] for option in payload["options"])
 
 
+def test_prepare_command_accepts_natural_language(monkeypatch):
+    module = _load_module()
+
+    payload = module.prepare_command("请使用 webnovel-writer 初始化一个小说项目。", mode="codex")
+
+    assert payload["status"] == "ok"
+    assert payload["command"]["name"] == "webnovel-init"
+    assert payload["command"]["args"] == []
+    assert payload["action"]["type"] == "follow_skill"
+
+
 def test_start_dashboard_uses_resolved_python(monkeypatch, tmp_path):
     module = _load_module()
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import shlex
+import re
 from typing import Dict, Iterable, Sequence, Tuple
 
 
@@ -77,13 +78,74 @@ def _build_parsed_command(spec: CommandSpec, args: Iterable[str]) -> ParsedComma
     )
 
 
+def _extract_range_arg(raw: str, unit: str) -> Tuple[str, ...]:
+    text = str(raw or "")
+    range_match = re.search(rf"第?\s*(\d+)\s*(?:到|至|\-|—|~)\s*(\d+)\s*{unit}", text)
+    if range_match:
+        return (f"{range_match.group(1)}-{range_match.group(2)}",)
+
+    single_match = re.search(rf"第?\s*(\d+)\s*{unit}", text)
+    if single_match:
+        return (single_match.group(1),)
+
+    return ()
+
+
+def _contains_command_name(raw: str, command_name: str) -> bool:
+    pattern = rf"(?<![A-Za-z0-9_-]){re.escape(command_name)}(?![A-Za-z0-9_-])"
+    return re.search(pattern, str(raw or ""), flags=re.IGNORECASE) is not None
+
+
+def _parse_natural_language_text(text: str) -> ParsedCommand:
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("Missing webnovel command text")
+
+    explicit_map = (
+        ("webnovel-init", ()),
+        ("webnovel-dashboard", ()),
+        ("webnovel-resume", ()),
+        ("webnovel-learn", ()),
+    )
+    for command_name, args in explicit_map:
+        if _contains_command_name(raw, command_name):
+            return _build_parsed_command(COMMAND_SPECS[command_name], args)
+
+    if _contains_command_name(raw, "webnovel-write"):
+        return _build_parsed_command(COMMAND_SPECS["webnovel-write"], _extract_range_arg(raw, "章"))
+    if _contains_command_name(raw, "webnovel-review"):
+        return _build_parsed_command(COMMAND_SPECS["webnovel-review"], _extract_range_arg(raw, "章"))
+    if _contains_command_name(raw, "webnovel-plan"):
+        return _build_parsed_command(COMMAND_SPECS["webnovel-plan"], _extract_range_arg(raw, "卷"))
+    if _contains_command_name(raw, "webnovel-query"):
+        return _build_parsed_command(COMMAND_SPECS["webnovel-query"], ())
+
+    normalized = raw.casefold()
+    if "初始化" in raw and any(keyword in raw for keyword in ("小说", "项目", "书")):
+        return _build_parsed_command(COMMAND_SPECS["webnovel-init"], ())
+    if any(keyword in raw for keyword in ("规划", "计划")) and "卷" in raw:
+        return _build_parsed_command(COMMAND_SPECS["webnovel-plan"], _extract_range_arg(raw, "卷"))
+    if any(keyword in raw for keyword in ("写", "生成")) and "章" in raw:
+        return _build_parsed_command(COMMAND_SPECS["webnovel-write"], _extract_range_arg(raw, "章"))
+    if any(keyword in raw for keyword in ("审查", "审核", "复查", "review")) and "章" in raw:
+        return _build_parsed_command(COMMAND_SPECS["webnovel-review"], _extract_range_arg(raw, "章"))
+    if "dashboard" in normalized or "面板" in raw:
+        return _build_parsed_command(COMMAND_SPECS["webnovel-dashboard"], ())
+    if any(keyword in raw for keyword in ("查询", "检索")):
+        return _build_parsed_command(COMMAND_SPECS["webnovel-query"], ())
+    if any(keyword in raw for keyword in ("恢复", "继续")) and any(keyword in raw for keyword in ("任务", "流程", "工作流")):
+        return _build_parsed_command(COMMAND_SPECS["webnovel-resume"], ())
+
+    raise ValueError(f"Unknown webnovel command: {raw}")
+
+
 def parse_command_text(text: str) -> ParsedCommand:
     raw = str(text or "").strip()
     if not raw:
         raise ValueError("Missing webnovel command text")
 
     if not raw.startswith(COMMAND_PREFIX):
-        raise ValueError(f"Unsupported command format: {raw}")
+        return _parse_natural_language_text(raw)
 
     tokens = shlex.split(raw)
     if not tokens:
@@ -110,6 +172,6 @@ def parse_argv(argv: Sequence[str]) -> ParsedCommand:
 
     canonical_name = _alias_map().get(first)
     if canonical_name is None:
-        raise ValueError(f"Unknown webnovel command: {first}")
+        return _parse_natural_language_text(" ".join(str(part) for part in argv if str(part).strip()))
 
     return _build_parsed_command(COMMAND_SPECS[canonical_name], argv[1:])
