@@ -16,7 +16,7 @@
 
 1. 进程环境变量（最高优先级）
 2. 书项目根目录下的 `.env`
-3. 用户级全局：`~/.claude/webnovel-writer/.env`
+3. 用户级全局：`~/.codex/webnovel-writer/.env`
 
 ## `.env` 最小配置
 
@@ -40,4 +40,4 @@ RERANK_API_KEY=your_rerank_api_key
 cp .env.example .env
 ```
 
-- Claude Code 与 Codex 适配层共用同一套 `.env` 配置，不需要分开维护两份 Key。
+- Codex 对话入口与 shell fallback 共用同一套 `.env` 配置，不需要分开维护两份 Key。

@@ -6,7 +6,7 @@
 
 ## Goal
 
-将 `webnovel-writer` 从 “Claude Code 插件专用” 扩展为 “Codex 可安装、可维护、可开源发布” 的兼容版本，同时尽量保持原有使用习惯，尤其保留 `/webnovel-writer:*` 这一组命令契约。
+将上游 `webnovel-writer` 改造为 “Codex 可安装、可维护、可开源发布” 的兼容版本，同时尽量保持原有使用习惯，尤其保留 `/webnovel-writer:*` 这一组命令契约。
 
 ## Product Contract
 
@@ -23,10 +23,10 @@
 
 ## Non-Goals
 
-- 不在本轮直接重写所有 Claude skills/agents 的文学提示词内容。
+- 不在本轮直接重写所有上游 skills/agents 的文学提示词内容。
 - 不在本轮重做前端 Dashboard UI。
 - 不在本轮引入新的创作流程命令；先对齐现有命令集合。
-- 不依赖 Claude 私有运行时或缓存目录作为正式发布路径。
+- 不依赖上游私有运行时或缓存目录作为正式发布路径。
 
 ## Approaches Considered
 
@@ -73,7 +73,7 @@
 **优点**
 - 兼顾兼容性、可维护性、开源发布体验
 - 最大化复用现有数据核心
-- 用户不需要理解背后的 Claude/Codex 差异
+- 用户不需要理解上游实现与 Codex 适配层的差异
 
 **缺点**
 - 需要新增适配层、安装脚本、技能包
@@ -214,12 +214,12 @@ Skill 行为：
 - 第二优先：不破坏 Python 3.10+ 语法环境
 - 第三优先：统一使用 `sys.executable` 或解释器解析器，而不是裸 `python`
 
-### Claude Coupling
+### Upstream Coupling
 
-保留现有 Claude 插件目录，不直接移除；但新增的 Codex 支持不依赖：
+保留上游目录结构，不直接移除；但新增的 Codex 支持不依赖：
 - `~/.claude/plugins/cache/...`
-- Claude 专属 slash 命令注册机制
-- Claude 私有 Agent/Skill 调度能力
+- 上游专属 slash 命令注册机制
+- 上游私有 Agent/Skill 调度能力
 
 ### Command Compatibility
 

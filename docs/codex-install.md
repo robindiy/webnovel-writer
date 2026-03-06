@@ -2,6 +2,10 @@
 
 这份文档面向 **普通用户**，目标是让你不需要理解内部实现，也能按步骤把 `webnovel-writer` 装到 Codex 里使用。
 
+本仓库是 **基于上游 [`lingfengQAQ/webnovel-writer`](https://github.com/lingfengQAQ/webnovel-writer) 改造的 Codex 适配版本**。
+
+因此这份文档只讲 **Codex 用户的安装和使用方式**。
+
 如果你只是想照着一步步操作，直接按本文执行即可。
 
 ## 适用场景

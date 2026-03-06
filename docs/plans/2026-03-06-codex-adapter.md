@@ -1,6 +1,6 @@
 # Codex Webnovel Adapter Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **Execution note:** Use `superpowers:executing-plans` to implement this plan task-by-task.
 
 **Goal:** Build a Codex-compatible adapter for `webnovel-writer` that preserves the original `/webnovel-writer:*` command contract while fixing interpreter and Python-version compatibility issues.
 
@@ -253,7 +253,7 @@ Expected:
 
 **Step 5: Checkpoint**
 
-- Confirm a user can install without touching Claude cache directories
+- Confirm a user can install without touching any upstream cache directories
 - Do not commit unless explicitly requested by the user
 
 ### Task 6: Update docs and acceptance checks
