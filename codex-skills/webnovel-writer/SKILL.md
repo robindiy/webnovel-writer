@@ -1,6 +1,6 @@
 ---
 name: webnovel-writer
-description: "Codex adapter for the webnovel-writer plugin. Use when the user references or runs /webnovel-writer:webnovel-init, /webnovel-writer:webnovel-plan, /webnovel-writer:webnovel-write, /webnovel-writer:webnovel-review, /webnovel-writer:webnovel-dashboard, /webnovel-writer:webnovel-query, /webnovel-writer:webnovel-resume, or /webnovel-writer:webnovel-learn. Preserves original slash-command usage while delegating to the repository's existing workflow docs and scripts."
+description: "Use when the user asks to initialize a novel project, plan a volume, write a chapter, review chapters, open the dashboard, resume a workflow, or references command names such as webnovel-init, webnovel-plan, webnovel-write, webnovel-review, webnovel-dashboard, webnovel-query, or webnovel-resume."
 ---
 
 # Webnovel Writer for Codex
@@ -9,7 +9,9 @@ Use the installed helper to normalize the user's command before taking action.
 
 ## Command Resolution
 
-1. Read the user's exact slash command or fallback command text.
+1. Read the user's exact command text.
+   - In Codex chat, users may describe the action in natural language or mention command names like `webnovel-init`.
+   - Raw leading `/webnovel-writer:*` text may be intercepted by Codex before it reaches the model, so do not depend on literal slash input inside the Codex chat box.
 2. Run:
 
 ```bash

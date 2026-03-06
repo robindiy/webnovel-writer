@@ -2,6 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-npm_required-green.svg)](https://nodejs.org/)
 [![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://openai.com/)
 
 ## 项目简单介绍
@@ -14,7 +15,7 @@
 
 - **来源**：派生自上游 `webnovel-writer`
 - **定位**：面向 Codex 用户的适配版本
-- **目标**：尽量保留原命令契约，如 `/webnovel-writer:*`
+- **目标**：在终端 fallback 中尽量保留原命令契约，如 `/webnovel-writer:*`
 
 详细文档已拆分到 `docs/`：
 
@@ -27,6 +28,42 @@
 - 文档导航：`docs/README.md`
 
 ## 快速开始
+
+### 0) 先确认 Codex 已安装
+
+如果你还没有安装 Codex CLI，先执行官方安装命令：
+
+```bash
+npm i -g @openai/codex
+```
+
+如果这一步报 `npm: command not found`，说明你本机还没有可用的 Node.js / npm，需要先安装 Node.js，再重新执行上面的命令。
+
+安装完成后，再执行：
+
+```bash
+codex --version
+```
+
+如果这一步报 `command not found`，先不要继续后面的安装步骤。
+
+这通常说明有两种情况：
+
+1. 你还没有安装 Codex
+2. 你已经安装了 Codex，但当前终端还没有拿到 `codex` 命令
+
+这时请先完成 Codex 的安装，并确认 `codex` 命令已经进入当前终端环境。
+
+如果你刚装好 Codex，最常见的处理方式是：
+
+```bash
+exec $SHELL -l
+codex --version
+```
+
+如果仍然找不到 `codex`，请先解决 Codex 本体安装或 `PATH` 配置问题，再继续下面的步骤。
+
+确认 `codex --version` 正常后，再继续下面的步骤。
 
 ### 1) 克隆仓库
 
@@ -67,36 +104,74 @@ python3 scripts/install_codex_support.py
 - 写入安装状态：`~/.codex/webnovel-writer/install_state.json`
 - 将当前仓库路径写入 skill 配置，后续可直接从 Codex 调用
 
-### 5) 在 Codex 中使用原 slash 命令
+### 5) 先验证 fallback
 
-优先保留原命令用法：
+先不要启动 Codex。
+
+继续在当前这个终端窗口里执行：
+
+```bash
+~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-init" --mode codex --json
+```
+
+如果这一步成功，输出里应至少包含：
+
+```json
+{
+  "status": "ok",
+  "command": {
+    "name": "webnovel-init"
+  }
+}
+```
+
+这一步也顺便说明：**终端 fallback 支持原 slash 契约**。
+
+### 6) 创建小说工作目录
+
+继续在同一个终端窗口里执行：
+
+```bash
+mkdir -p "$HOME/Documents/webnovel-workspace"
+cd "$HOME/Documents/webnovel-workspace"
+```
+
+这一步执行完后，你当前所在目录就是以后放小说项目的地方。
+
+### 7) 启动 Codex
+
+继续在同一个终端窗口里执行：
+
+```bash
+codex
+```
+
+执行后，你会进入 Codex 会话界面。
+
+### 8) 在 Codex 里输入初始化命令
+
+进入 Codex 会话后，**不要直接输入以 `/` 开头的原始命令**。
+
+当前 Codex 会先拦截未知的 `/命令`，它们在到达模型前就会被拒绝。
+
+所以在 Codex 对话里，请输入自然语言版本，例如：
 
 ```text
-/webnovel-writer:webnovel-init
-/webnovel-writer:webnovel-plan 1
-/webnovel-writer:webnovel-write 1
-/webnovel-writer:webnovel-review 1-5
-/webnovel-writer:webnovel-dashboard
+请使用 webnovel-writer 初始化一个小说项目。
 ```
 
-如果在纯 shell 中使用 fallback：
+这一步会开始初始化小说项目，并在当前工作目录下创建书项目。
 
-```bash
-~/.codex/bin/webnovel-codex webnovel-write 1
-~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-dashboard" --execute-dashboard
+### 9) 初始化完成后，继续使用这些命令
+
+```text
+请使用 webnovel-writer 规划第 1 卷。
+请使用 webnovel-writer 写第 1 章。
+请使用 webnovel-writer 审查第 1 到 5 章。
+请使用 webnovel-writer 打开 dashboard。
 ```
 
-### 6) 初始化小说项目
-
-在 Codex 中执行：
-
-```bash
-/webnovel-writer:webnovel-init
-```
-
-`/webnovel-writer:webnovel-init` 会在当前工作目录下按书名创建书项目，并写入当前项目指针。
-
-### 7) 配置 RAG 环境（必做）
+### 10) 配置 RAG 环境（必做）
 
 进入初始化后的书项目根目录，创建 `.env`：
 
@@ -116,7 +191,7 @@ RERANK_MODEL=jina-reranker-v3
 RERANK_API_KEY=your_rerank_api_key
 ```
 
-### 8) 开始使用
+### 11) 开始使用
 
 ```bash
 /webnovel-writer:webnovel-plan 1
@@ -124,7 +199,7 @@ RERANK_API_KEY=your_rerank_api_key
 /webnovel-writer:webnovel-review 1-5
 ```
 
-### 9) 启动可视化面板（可选）
+### 12) 启动可视化面板（可选）
 
 ```bash
 /webnovel-writer:webnovel-dashboard
@@ -135,7 +210,7 @@ RERANK_API_KEY=your_rerank_api_key
 - 前端构建产物已随插件发布，使用者无需本地 `npm build`。
 - Python 3.9 环境下也可运行；仓库内已移除会导致 `str | None` 报错的注解炸点。
 
-### 10) 恢复到安装前状态
+### 13) 恢复到安装前状态
 
 如果你想撤销本次 Codex 安装，执行：
 
