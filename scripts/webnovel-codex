@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HELPER_PATH="__HELPER_PATH__"
+
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+  PYTHON_EXEC="$PYTHON_BIN"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_EXEC="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_EXEC="python"
+else
+  echo "ERROR: Python executable not found." >&2
+  exit 1
+fi
+
+exec "$PYTHON_EXEC" "$HELPER_PATH" "$@"

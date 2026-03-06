@@ -10,6 +10,8 @@ RAG Adapter - RAG 检索适配模块
 - 混合检索 (向量 + BM25)
 """
 
+from __future__ import annotations
+
 import asyncio
 import sqlite3
 import json

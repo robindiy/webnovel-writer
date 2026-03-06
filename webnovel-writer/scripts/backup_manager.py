@@ -46,6 +46,8 @@ Git 提交规范：
   ✅ 原子性操作，要么全部成功，要么全部失败
 """
 
+from __future__ import annotations
+
 import subprocess
 import json
 import os

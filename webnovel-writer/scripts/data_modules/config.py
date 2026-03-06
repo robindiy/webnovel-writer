@@ -8,6 +8,8 @@ API 配置通过环境变量读取（支持 .env 文件）：
 - RERANK_BASE_URL, RERANK_MODEL, RERANK_API_KEY
 """
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 from dataclasses import dataclass, field

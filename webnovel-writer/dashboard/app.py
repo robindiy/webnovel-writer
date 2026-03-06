@@ -4,6 +4,8 @@ Webnovel Dashboard - FastAPI 主应用
 仅提供 GET 接口（严格只读）；所有文件读取经过 path_guard 防穿越校验。
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import sqlite3

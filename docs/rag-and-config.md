@@ -34,3 +34,10 @@ RERANK_API_KEY=your_rerank_api_key
 
 - 未配置 Embedding Key 时，语义检索会回退到 BM25。
 - 推荐每本书单独配置 `${PROJECT_ROOT}/.env`，避免多项目串配置。
+- `webnovel-init` 会在书项目根目录自动生成 `.env.example`，可直接：
+
+```bash
+cp .env.example .env
+```
+
+- Claude Code 与 Codex 适配层共用同一套 `.env` 配置，不需要分开维护两份 Key。

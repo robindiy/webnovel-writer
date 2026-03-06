@@ -20,6 +20,8 @@ python golden_three_checker.py --auto --mode llm         # LLM 深度评估（�
 python golden_three_checker.py --auto --generate-prompt  # 仅生成评估 Prompt
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import re

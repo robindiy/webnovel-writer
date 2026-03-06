@@ -1,8 +1,9 @@
 # Webnovel Writer
 
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-purple.svg)](https://claude.ai/claude-code)
+[![Codex](https://img.shields.io/badge/Codex-Compatible-green.svg)](https://openai.com/)
 
 ## 项目简单介绍
 
@@ -10,6 +11,7 @@
 
 详细文档已拆分到 `docs/`：
 
+- Codex 安装：`docs/codex-install.md`
 - 架构与模块：`docs/architecture.md`
 - 命令详解：`docs/commands.md`
 - RAG 与配置：`docs/rag-and-config.md`
@@ -31,20 +33,65 @@ claude plugin install webnovel-writer@webnovel-writer-marketplace --scope user
 ### 2) 安装 Python 依赖
 
 ```bash
-python -m pip install -r https://raw.githubusercontent.com/lingfengQAQ/webnovel-writer/HEAD/requirements.txt
+python3 -m pip install -r https://raw.githubusercontent.com/lingfengQAQ/webnovel-writer/HEAD/requirements.txt
 ```
 
 说明：该入口会同时安装核心写作链路与 Dashboard 依赖。
 
-### 3) 初始化小说项目
+### 2.5) 安装 Codex 适配层（可选）
 
-在 Claude Code 中执行：
+如果你希望在 Codex 桌面版/CLI 中沿用原插件命令习惯，执行：
 
 ```bash
-/webnovel-init
+python3 scripts/install_codex_support.py
 ```
 
-说明：`/webnovel-init` 会在当前 Workspace 下按书名创建 `PROJECT_ROOT`（子目录），并在 `workspace/.claude/.webnovel-current-project` 写入当前项目指针。
+安装完成后会：
+
+- 把 Codex skill 安装到 `~/.codex/skills/webnovel-writer`
+- 生成 shell fallback：`~/.codex/bin/webnovel-codex`
+- 生成一键恢复入口：`~/.codex/bin/webnovel-codex-restore`
+- 写入安装状态：`~/.codex/webnovel-writer/install_state.json`
+- 将当前仓库路径写入 skill 配置，后续可直接从 Codex 调用
+
+Codex 中优先保留原 slash 用法：
+
+```text
+/webnovel-writer:webnovel-init
+/webnovel-writer:webnovel-write 1
+/webnovel-writer:webnovel-dashboard
+```
+
+如果在纯 shell 中使用 fallback：
+
+```bash
+~/.codex/bin/webnovel-codex webnovel-write 1
+~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-dashboard" --execute-dashboard
+```
+
+建议先跑一次不污染真实环境的临时烟测：
+
+```bash
+python3 scripts/smoke_test_codex_support.py
+```
+
+需要恢复到安装前状态时：
+
+```bash
+~/.codex/bin/webnovel-codex-restore
+```
+
+### 3) 初始化小说项目
+
+在 Claude Code / Codex 中优先使用完整 slash 命令：
+
+```bash
+/webnovel-writer:webnovel-init
+```
+
+说明：部分 Claude 环境也支持短命令别名（如 `/webnovel-init`），但对外兼容契约以 `/webnovel-writer:*` 为准。
+
+`/webnovel-writer:webnovel-init` 会在当前 Workspace 下按书名创建 `PROJECT_ROOT`（子目录），并在 `workspace/.claude/.webnovel-current-project` 写入当前项目指针。
 
 ### 4) 配置 RAG 环境（必做）
 
@@ -69,20 +116,21 @@ RERANK_API_KEY=your_rerank_api_key
 ### 5) 开始使用
 
 ```bash
-/webnovel-plan 1
-/webnovel-write 1
-/webnovel-review 1-5
+/webnovel-writer:webnovel-plan 1
+/webnovel-writer:webnovel-write 1
+/webnovel-writer:webnovel-review 1-5
 ```
 
 ### 6) 启动可视化面板（可选）
 
 ```bash
-/webnovel-dashboard
+/webnovel-writer:webnovel-dashboard
 ```
 
 说明：
 - Dashboard 为只读面板（项目状态、实体图谱、章节/大纲浏览、追读力查看）。
 - 前端构建产物已随插件发布，使用者无需本地 `npm build`。
+- Python 3.9 环境下也可运行；仓库内已移除会导致 `str | None` 报错的注解炸点。
 
 ### 7) Agent 模型设置（可选）
 
@@ -138,3 +186,18 @@ git checkout -b feature/your-feature
 git commit -m "feat: add your feature"
 git push origin feature/your-feature
 ```
+
+## Codex 兼容说明
+
+当前仓库同时维护两类入口：
+
+- Claude Code 插件入口（原生 Marketplace 方式）
+- Codex 适配入口（`scripts/install_codex_support.py` + `codex-skills/webnovel-writer`）
+
+兼容策略：
+
+- **Codex 对话优先保留原 slash 命令**
+- **纯 shell 提供 `webnovel-codex` fallback**
+- **底层统一复用 `webnovel-writer/scripts/webnovel.py`、`workflow_manager.py`、Dashboard 服务**
+
+对外命令契约以 `/webnovel-writer:*` 为准，便于开源维护和跨运行时对齐。

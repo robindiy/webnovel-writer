@@ -13,6 +13,8 @@ v5.1 变更（v5.4 沿用）:
 - state.json 保留精简数据，大数据自动迁移到 SQLite
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import sys

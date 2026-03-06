@@ -12,6 +12,8 @@ SQL State Manager - SQLite 状态管理模块 (v5.4)
 - 支持增量写入和按需查询
 """
 
+from __future__ import annotations
+
 import json
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field

@@ -28,15 +28,43 @@
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│                      Claude Code                           │
+│            Claude Code / Codex Desktop / Shell             │
 ├─────────────────────────────────────────────────────────────┤
-│  Skills (7个): init / plan / write / review / query / ... │
+│  Slash Commands + Codex Adapter Registry                   │
 ├─────────────────────────────────────────────────────────────┤
-│  Agents (8个): Context / Data / 多维 Checker               │
+│  Skills (init / plan / write / review / query / resume)    │
+├─────────────────────────────────────────────────────────────┤
+│  Agents (Context / Data / 多维 Checker)                    │
 ├─────────────────────────────────────────────────────────────┤
 │  Data Layer: state.json / index.db / vectors.db            │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## Codex 适配层
+
+为兼容 Codex，本仓库新增三层：
+
+- **Runtime Compatibility**
+  - 统一解释器选择
+  - Python 3.9+ 注解兼容
+- **Command Registry**
+  - 单一来源维护 `/webnovel-writer:*` 与 shell fallback 的映射
+- **Codex Adapter CLI**
+  - 解析 slash 命令
+  - 给 Codex 返回结构化选项
+  - 启动 Dashboard
+  - 把命令路由回原有 skill 文档与 Python 核心
+
+对应实现文件：
+
+- `webnovel-writer/scripts/runtime_compat.py`
+- `webnovel-writer/scripts/codex_command_registry.py`
+- `webnovel-writer/scripts/codex_cli.py`
+- `webnovel-writer/scripts/codex_interaction.py`
+- `codex-skills/webnovel-writer/SKILL.md`
+- `scripts/install_codex_support.py`
+- `scripts/restore_codex_support.py`
+- `scripts/smoke_test_codex_support.py`
 
 ## 双 Agent 架构
 

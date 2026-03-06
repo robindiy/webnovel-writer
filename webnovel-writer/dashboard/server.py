@@ -6,6 +6,8 @@ Dashboard 启动脚本
     python -m dashboard.server                   # 自动从 .claude 指针读取
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import sys

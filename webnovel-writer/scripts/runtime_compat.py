@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Union
@@ -76,3 +77,16 @@ def normalize_windows_path(value: Union[str, Path]) -> Path:
 
     return Path(value)
 
+
+def resolve_python_executable() -> str:
+    """Resolve a usable Python executable for subprocess calls."""
+    current = str(getattr(sys, "executable", "") or "").strip()
+    if current:
+        return current
+
+    for candidate in ("python3", "python"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+
+    return "python3"

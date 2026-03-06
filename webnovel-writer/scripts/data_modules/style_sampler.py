@@ -9,6 +9,8 @@ Style Sampler - 风格样本管理模块
 - 样本选择策略
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 import time

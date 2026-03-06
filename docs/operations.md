@@ -97,3 +97,45 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" rag stats
 pwsh "${CLAUDE_PLUGIN_ROOT}/scripts/run_tests.ps1" -Mode smoke
 pwsh "${CLAUDE_PLUGIN_ROOT}/scripts/run_tests.ps1" -Mode full
 ```
+
+## Codex 适配层运维
+
+### 安装到 Codex
+
+```bash
+python3 scripts/install_codex_support.py
+```
+
+默认会写入：
+
+- `~/.codex/skills/webnovel-writer`
+- `~/.codex/bin/webnovel-codex`
+- `~/.codex/bin/webnovel-codex-restore`
+- `~/.codex/webnovel-writer/install_state.json`
+
+### 临时环境烟测（推荐先跑）
+
+```bash
+python3 scripts/smoke_test_codex_support.py
+```
+
+说明：
+
+- 该命令会创建临时 `CODEX_HOME`
+- 执行一次完整的“安装 → 命令代理 → 恢复”
+- 默认结束后自动删除临时目录
+- 如果要保留现场排查，可加 `--keep-temp`
+
+### 一键恢复
+
+如果真实 `~/.codex` 已安装了本适配层，需要回到安装前状态，执行：
+
+```bash
+~/.codex/bin/webnovel-codex-restore
+```
+
+恢复逻辑：
+
+- 若安装前已有 `webnovel-writer` skill / wrapper，则恢复旧版本
+- 若安装前不存在，则删除本次安装产生的 skill / wrapper
+- 清理 `install_state.json` 与对应备份目录

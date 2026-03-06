@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Writer"
+  short_description: "Run original /webnovel-writer:* commands from Codex"
+  default_prompt: "Handle this /webnovel-writer:* command exactly like the original plugin, preserving slash-command compatibility and using the installed helper to resolve the workflow."

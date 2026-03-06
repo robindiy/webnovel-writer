@@ -14,6 +14,8 @@ v5.1 变更（v5.4 沿用）:
 - 移除对 state.json 的直接操作
 """
 
+from __future__ import annotations
+
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
