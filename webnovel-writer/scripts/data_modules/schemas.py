@@ -74,6 +74,10 @@ class DataAgentOutput(BaseModel):
     scenes_chunked: int = 0
     uncertain: List[UncertainMention] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    foreshadowing_notes: List[str] = Field(default_factory=list)
+    foreshadowing_planted: List[Dict[str, Any]] = Field(default_factory=list)
+    foreshadowing_continued: List[Dict[str, Any]] = Field(default_factory=list)
+    foreshadowing_resolved: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ErrorSchema(BaseModel):
@@ -118,6 +122,10 @@ def normalize_data_agent_output(payload: Dict[str, Any]) -> Dict[str, Any]:
         "relationships_new",
         "uncertain",
         "warnings",
+        "foreshadowing_notes",
+        "foreshadowing_planted",
+        "foreshadowing_continued",
+        "foreshadowing_resolved",
     ]:
         _ensure_list(key)
 

@@ -64,7 +64,7 @@ def find_chapter_file(project_root: Path, chapter_num: int) -> Optional[Path]:
     return None
 
 
-def default_chapter_draft_path(project_root: Path, chapter_num: int, *, use_volume_layout: bool = False) -> Path:
+def default_chapter_draft_path(project_root: Path, chapter_num: int, *, use_volume_layout: bool = True) -> Path:
     """
     Preferred draft path when creating a new chapter file.
 
@@ -73,7 +73,7 @@ def default_chapter_draft_path(project_root: Path, chapter_num: int, *, use_volu
         chapter_num: 章节号
         use_volume_layout: True 使用卷布局 (正文/第N卷/第NNN章.md)，False 使用平坦布局 (正文/第NNNN章.md)
 
-    Default is flat layout to match SKILL.md documentation.
+    Default is volume layout: 正文/第N卷/第NNN章.md
     """
     if use_volume_layout:
         vol_dir = project_root / "正文" / f"第{volume_num_for_chapter(chapter_num)}卷"
@@ -81,4 +81,3 @@ def default_chapter_draft_path(project_root: Path, chapter_num: int, *, use_volu
     else:
         # Flat layout: 正文/第NNNN章.md (matches SKILL.md)
         return project_root / "正文" / f"第{chapter_num:04d}章.md"
-

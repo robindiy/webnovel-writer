@@ -36,6 +36,11 @@ from .index_manager import IndexManager
 from .query_router import QueryRouter
 from .observability import safe_append_perf_timing, safe_log_tool_call
 
+try:
+    from chapter_paths import default_chapter_draft_path, find_chapter_file
+except ImportError:  # pragma: no cover
+    from scripts.chapter_paths import default_chapter_draft_path, find_chapter_file
+
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,29 @@ VECTOR_REQUIRED_COLUMNS = (
     "source_file",
     "created_at",
 )
+
+
+def _resolve_chapter_source_file(
+    *,
+    project_root: Path | None,
+    chapter_num: int,
+    scene_index: int,
+    chapter_file: str = "",
+) -> str:
+    explicit = str(chapter_file or "").strip()
+    if explicit:
+        return explicit if "#scene_" in explicit else f"{explicit}#scene_{scene_index}"
+
+    if project_root is not None:
+        actual = find_chapter_file(project_root, chapter_num)
+        candidate = actual or default_chapter_draft_path(project_root, chapter_num)
+        try:
+            rel = candidate.relative_to(project_root)
+        except ValueError:
+            rel = candidate
+        return f"{rel.as_posix()}#scene_{scene_index}"
+
+    return f"正文/第{chapter_num:04d}章.md#scene_{scene_index}"
 
 
 @dataclass
@@ -390,7 +418,7 @@ class RAGAdapter:
                 "content": "场景内容...",
                 "chunk_type": "scene",
                 "parent_chunk_id": "ch0100_summary",
-                "source_file": "正文/第0100章.md#scene_1"
+                "source_file": "正文/第2卷/第100章.md#scene_1"
             }
         ]
 
@@ -1407,6 +1435,7 @@ def main():
     # 写入索引
     index_parser = subparsers.add_parser("index-chapter")
     index_parser.add_argument("--chapter", type=int, required=True)
+    index_parser.add_argument("--chapter-file", required=False, help="章节正文相对路径，如 正文/第1卷/第001章.md")
     index_parser.add_argument("--scenes", required=True, help="JSON 格式的场景列表")
     index_parser.add_argument("--summary", required=False, help="章节摘要文本")
 
@@ -1511,7 +1540,12 @@ def main():
                     "chunk_type": "scene",
                     "parent_chunk_id": parent_chunk_id,
                     "chunk_id": chunk_id,
-                    "source_file": f"正文/第{args.chapter:04d}章.md#scene_{int(scene_index)}",
+                    "source_file": _resolve_chapter_source_file(
+                        project_root=getattr(config, "project_root", None),
+                        chapter_num=args.chapter,
+                        scene_index=int(scene_index),
+                        chapter_file=getattr(args, "chapter_file", ""),
+                    ),
                 }
             )
 

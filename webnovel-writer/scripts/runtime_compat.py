@@ -7,6 +7,7 @@ Runtime compatibility helpers.
 from __future__ import annotations
 
 import os
+import locale
 import re
 import shutil
 import sys
@@ -90,3 +91,45 @@ def resolve_python_executable() -> str:
             return found
 
     return "python3"
+
+
+def ensure_utf8_locale() -> str:
+    """Ensure LC_CTYPE uses a UTF-8 locale for interactive terminal input."""
+    current = str(locale.setlocale(locale.LC_CTYPE) or "")
+    normalized_current = current.upper()
+    if "UTF-8" in normalized_current or "UTF8" in normalized_current:
+        return current
+
+    candidates = []
+    for key in ("LC_ALL", "LC_CTYPE", "LANG"):
+        raw = str(os.environ.get(key, "") or "").strip()
+        if raw and raw.upper() not in {"C", "POSIX"}:
+            candidates.append(raw)
+
+    if sys.platform == "darwin":
+        candidates.extend(["en_US.UTF-8", "zh_CN.UTF-8", "UTF-8", "C.UTF-8"])
+    else:
+        candidates.extend(["C.UTF-8", "en_US.UTF-8", "zh_CN.UTF-8", "UTF-8"])
+
+    seen = set()
+    deduped = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
+
+    for candidate in deduped:
+        upper = candidate.upper()
+        if "UTF-8" not in upper and "UTF8" not in upper:
+            continue
+        try:
+            selected = str(locale.setlocale(locale.LC_CTYPE, candidate) or candidate)
+            os.environ["LC_CTYPE"] = candidate
+            if str(os.environ.get("LANG", "") or "").strip().upper() in {"", "C", "POSIX"}:
+                os.environ["LANG"] = candidate
+            return selected
+        except locale.Error:
+            continue
+
+    return current

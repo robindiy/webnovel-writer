@@ -19,7 +19,7 @@
     {
       "id": "ISSUE_001",
       "type": "问题类型",
-      "severity": "critical|high|medium|low",
+      "severity": "critical|high|medium|low|minor",
       "location": "位置描述",
       "description": "问题描述",
       "suggestion": "修复建议",
@@ -55,6 +55,7 @@
 | `high` | 高优先级问题 | 优先修复 |
 | `medium` | 中等问题 | 建议修复 |
 | `low` | 轻微问题 | 可选修复 |
+| `minor` | 打磨级小问题 | 仅精修时处理 |
 
 ## 各 Checker 特定 metrics
 

@@ -17,7 +17,7 @@ model: inherit
 - **上章钩子**: `state.json → chapter_meta` 或 `index.db`
 
 ## 输入
-- 章节正文（`正文/第{NNNN}章.md`）
+- 章节正文（`正文/第{volume_num}卷/第{chapter_short_padded}章.md`）
 - 上章钩子与模式（从 `state.json → chapter_meta` 或 `index.db`）
 - 题材 Profile（从 `state.json → project.genre`）
 - 是否为过渡章标记

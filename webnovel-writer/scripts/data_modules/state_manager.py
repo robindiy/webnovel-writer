@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 from copy import deepcopy
@@ -30,9 +31,13 @@ import filelock
 
 from .config import get_config
 from .observability import safe_append_perf_timing, safe_log_tool_call
+from .state_validator import normalize_foreshadowing_item, normalize_state_runtime_sections
 
 
 logger = logging.getLogger(__name__)
+
+
+_FORESHADOWING_LABEL_RE = re.compile(r"^\[(?P<label>[^\]]+)\]\s*")
 
 try:
     # 当 scripts 目录在 sys.path 中（常见：从 scripts/ 运行）
@@ -125,6 +130,7 @@ class StateManager:
         self._pending_structured_relationships: List[Dict[str, Any]] = []
         self._pending_disambiguation_warnings: List[Dict[str, Any]] = []
         self._pending_disambiguation_pending: List[Dict[str, Any]] = []
+        self._pending_foreshadowing: List[Dict[str, Any]] = []
         self._pending_progress_chapter: Optional[int] = None
         self._pending_progress_words_delta: int = 0
         self._pending_chapter_meta: Dict[str, Any] = {}
@@ -142,6 +148,128 @@ class StateManager:
 
     def _now_progress_timestamp(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _parse_foreshadowing_note_label(raw_content: Any) -> tuple[str, str]:
+        text = str(raw_content or "").strip()
+        if not text:
+            return "", ""
+        matched = _FORESHADOWING_LABEL_RE.match(text)
+        if not matched:
+            return "", text
+        label = matched.group("label").strip()
+        content = text[matched.end():].strip()
+        return label, content
+
+    @staticmethod
+    def _foreshadowing_defaults(label: str, chapter: int, index: int) -> Dict[str, Any]:
+        note_type = str(label or "").strip()
+        defaults: Dict[str, Any] = {
+            "id": f"fs_ch{int(chapter):04d}_{int(index):02d}",
+            "status": "未回收",
+            "tier": "支线",
+            "planted_chapter": int(chapter),
+            "chapter_planted": int(chapter),
+            "source_chapter": int(chapter),
+        }
+        if note_type in {"核心", "主线"}:
+            defaults["tier"] = "核心"
+            defaults["expected_payoff"] = "中期"
+        elif note_type in {"装饰", "细节"}:
+            defaults["tier"] = "装饰"
+            defaults["expected_payoff"] = "短期"
+        elif note_type == "危机":
+            defaults["tier"] = "核心"
+            defaults["expected_payoff"] = "近期"
+        elif note_type == "新增":
+            defaults["expected_payoff"] = "近期至中期"
+        elif note_type == "推进":
+            defaults["expected_payoff"] = "短期推进"
+        elif note_type in {"回收", "兑现", "解决"}:
+            defaults["status"] = "已回收"
+            defaults["expected_payoff"] = "已兑现"
+        if note_type:
+            defaults["note_type"] = note_type
+        return defaults
+
+    @staticmethod
+    def _foreshadowing_merge_key(item: Dict[str, Any]) -> Optional[tuple[str, str]]:
+        if not isinstance(item, dict):
+            return None
+        item_id = str(item.get("id") or "").strip()
+        if item_id:
+            return ("id", item_id)
+        content = str(item.get("content") or "").strip()
+        if not content:
+            return None
+        return ("content", content)
+
+    def _normalize_foreshadowing_note(self, chapter: int, raw_note: Any, index: int) -> Optional[Dict[str, Any]]:
+        if isinstance(raw_note, str):
+            raw_item: Dict[str, Any] = {"content": raw_note}
+        elif isinstance(raw_note, dict):
+            raw_item = dict(raw_note)
+        else:
+            return None
+
+        label_from_content, cleaned_content = self._parse_foreshadowing_note_label(raw_item.get("content"))
+        note_type = str(
+            raw_item.get("note_type")
+            or raw_item.get("tag")
+            or raw_item.get("label")
+            or label_from_content
+            or ""
+        ).strip()
+        if not cleaned_content:
+            cleaned_content = str(raw_item.get("content") or "").strip()
+        if not cleaned_content:
+            return None
+
+        merged = self._foreshadowing_defaults(note_type, chapter, index)
+        for key, value in raw_item.items():
+            if value in (None, ""):
+                continue
+            merged[key] = value
+
+        merged["content"] = cleaned_content
+        normalized = normalize_foreshadowing_item(merged)
+        normalized.setdefault("id", merged.get("id"))
+        normalized.setdefault("chapter_planted", normalized.get("planted_chapter", int(chapter)))
+        normalized.setdefault("source_chapter", int(chapter))
+        if note_type and not normalized.get("note_type"):
+            normalized["note_type"] = note_type
+        if merged.get("expected_payoff") and not normalized.get("expected_payoff"):
+            normalized["expected_payoff"] = merged["expected_payoff"]
+        return normalized
+
+    def _merge_pending_foreshadowing(self, target_items: List[Dict[str, Any]], new_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not isinstance(target_items, list):
+            target_items = []
+
+        key_to_index: Dict[tuple[str, str], int] = {}
+        for idx, existing in enumerate(target_items):
+            if not isinstance(existing, dict):
+                continue
+            key = self._foreshadowing_merge_key(existing)
+            if key is not None:
+                key_to_index[key] = idx
+
+        for item in new_items:
+            if not isinstance(item, dict):
+                continue
+            key = self._foreshadowing_merge_key(item)
+            if key is None:
+                continue
+            existing_index = key_to_index.get(key)
+            if existing_index is None:
+                key_to_index[key] = len(target_items)
+                target_items.append(item)
+                continue
+            merged_item = dict(target_items[existing_index])
+            merged_item.update(item)
+            target_items[existing_index] = normalize_foreshadowing_item(merged_item)
+
+        return target_items
 
     def _ensure_state_schema(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """确保 state.json 具备运行所需的关键字段（尽量不破坏既有数据）。"""
@@ -226,6 +354,7 @@ class StateManager:
                 self._pending_structured_relationships,
                 self._pending_disambiguation_warnings,
                 self._pending_disambiguation_pending,
+                self._pending_foreshadowing,
                 self._pending_chapter_meta,
                 self._pending_progress_chapter is not None,
                 self._pending_progress_words_delta != 0,
@@ -332,6 +461,27 @@ class StateManager:
                     if len(pending_list) > max_keep:
                         disk_state["disambiguation_pending"] = pending_list[-max_keep:]
 
+                # plot_threads.foreshadowing（追加去重 + 结构归一）
+                if self._pending_foreshadowing:
+                    plot_threads = disk_state.get("plot_threads")
+                    if not isinstance(plot_threads, dict):
+                        plot_threads = {}
+                        disk_state["plot_threads"] = plot_threads
+                    foreshadowing = plot_threads.get("foreshadowing")
+                    if not isinstance(foreshadowing, list):
+                        foreshadowing = []
+                    plot_threads["foreshadowing"] = normalize_state_runtime_sections(
+                        {
+                            "plot_threads": {
+                                "foreshadowing": self._merge_pending_foreshadowing(
+                                    foreshadowing,
+                                    list(self._pending_foreshadowing),
+                                )
+                            },
+                            "chapter_meta": disk_state.get("chapter_meta", {}),
+                        }
+                    )["plot_threads"]["foreshadowing"]
+
                 # chapter_meta（新增：按章节号覆盖写入）
                 if self._pending_chapter_meta:
                     chapter_meta = disk_state.get("chapter_meta")
@@ -353,6 +503,7 @@ class StateManager:
                 # state.json 侧 pending 已写盘，直接清空
                 self._pending_disambiguation_warnings.clear()
                 self._pending_disambiguation_pending.clear()
+                self._pending_foreshadowing.clear()
                 self._pending_chapter_meta.clear()
                 self._pending_progress_chapter = None
                 self._pending_progress_words_delta = 0
@@ -1081,13 +1232,67 @@ class StateManager:
         # 处理消歧不确定项（不影响实体写入，但必须对 Writer 可见）
         warnings.extend(self._record_disambiguation(chapter, result.get("uncertain", [])))
 
-        # 写入 chapter_meta（钩子/模式/结束状态）
+        def _normalize_foreshadowing_batch(raw_items: Any, *, status: str = "", resolved: bool = False, start_index: int = 1) -> List[Dict[str, Any]]:
+            normalized_items: List[Dict[str, Any]] = []
+            if not isinstance(raw_items, list):
+                return normalized_items
+            for offset, raw_note in enumerate(raw_items, start=start_index):
+                if isinstance(raw_note, dict):
+                    raw_item = dict(raw_note)
+                else:
+                    raw_item = {"content": raw_note}
+                if status and not raw_item.get("status"):
+                    raw_item["status"] = status
+                if resolved:
+                    raw_item["status"] = raw_item.get("status") or "已回收"
+                    raw_item.setdefault("resolved_chapter", int(chapter))
+                else:
+                    raw_item.setdefault("source_chapter", int(chapter))
+                normalized = self._normalize_foreshadowing_note(chapter, raw_item, offset)
+                if normalized is not None:
+                    normalized_items.append(normalized)
+            return normalized_items
+
+        normalized_planted = _normalize_foreshadowing_batch(result.get("foreshadowing_planted", []), status="未回收", start_index=1)
+        normalized_continued = _normalize_foreshadowing_batch(result.get("foreshadowing_continued", []), status="未回收", start_index=1 + len(normalized_planted))
+        normalized_resolved = _normalize_foreshadowing_batch(result.get("foreshadowing_resolved", []), resolved=True, start_index=1 + len(normalized_planted) + len(normalized_continued))
+
+        # 写入 chapter_meta（钩子/模式/结束状态 + 伏笔设计执行结果）
         chapter_meta = result.get("chapter_meta")
-        if isinstance(chapter_meta, dict):
+        if not isinstance(chapter_meta, dict):
+            chapter_meta = {}
+        else:
+            chapter_meta = dict(chapter_meta)
+
+        if normalized_planted:
+            chapter_meta["foreshadowing_planted"] = [item.get("content", "") for item in normalized_planted if item.get("content")]
+        if normalized_continued:
+            chapter_meta["foreshadowing_continued"] = [item.get("content", "") for item in normalized_continued if item.get("content")]
+        if normalized_resolved:
+            chapter_meta["foreshadowing_resolved"] = [item.get("content", "") for item in normalized_resolved if item.get("content")]
+
+        if chapter_meta:
             meta_key = f"{int(chapter):04d}"
             self._state.setdefault("chapter_meta", {})
             self._state["chapter_meta"][meta_key] = chapter_meta
             self._pending_chapter_meta[meta_key] = chapter_meta
+
+        normalized_notes: List[Dict[str, Any]] = []
+        foreshadowing_notes = result.get("foreshadowing_notes", [])
+        if isinstance(foreshadowing_notes, list):
+            for index, raw_note in enumerate(foreshadowing_notes, start=1):
+                normalized = self._normalize_foreshadowing_note(chapter, raw_note, index)
+                if normalized is not None:
+                    normalized_notes.append(normalized)
+
+        merged_foreshadowing = normalized_notes + normalized_planted + normalized_continued + normalized_resolved
+        if merged_foreshadowing:
+            plot_threads = self._state.setdefault("plot_threads", {})
+            foreshadowing = plot_threads.get("foreshadowing")
+            if not isinstance(foreshadowing, list):
+                foreshadowing = []
+            plot_threads["foreshadowing"] = self._merge_pending_foreshadowing(foreshadowing, merged_foreshadowing)
+            self._pending_foreshadowing.extend(merged_foreshadowing)
 
         # 更新进度
         self.update_progress(chapter)

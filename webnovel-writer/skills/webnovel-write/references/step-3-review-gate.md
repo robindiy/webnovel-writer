@@ -2,7 +2,7 @@
 
 ## 调用约束（硬规则）
 
-- 必须使用 `Task` 调用审查 subagent，禁止主流程直接内联“自审结论”。
+- Claude Code 中必须使用 `Task` 调用审查 subagent；Codex 中必须使用 `review_agents_runner.py` 拉起 `codex exec` 子进程。两者都禁止主流程直接内联“自审结论”。
 - 审查任务可并行发起，必须在全部返回后统一聚合。
 - `overall_score` 必须来自聚合结果，不可主观估分。
 - 单章写作场景下，统一传入：`{chapter, chapter_file, project_root}`。
@@ -56,6 +56,21 @@ if mode != "minimal":
 parallel Task(agent, {chapter, chapter_file, project_root}) for agent in selected
 ```
 
+## Codex Runner（等价实现）
+
+Codex 不依赖对话内 `Task`，而是必须执行：
+
+```bash
+python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" review --chapter "${chapter_num}" --chapter-file "${chapter_file}" --mode auto
+```
+
+该 runner 必须：
+- 并行拉起多个 `codex exec` checker 子进程
+- 为每个 checker 写出 `.webnovel/reviews/ch{chapter_padded}/checkers/{checker}.json`
+- 写出聚合结果 `.webnovel/reviews/ch{chapter_padded}/aggregate.json`
+- 写出 `审查报告/第{chapter_num}-{chapter_num}章审查报告.md`
+- 完成 `review_metrics` 落库
+
 ## 输出契约（统一）
 
 每个 checker 返回值必须遵循 `${CLAUDE_PLUGIN_ROOT}/references/checker-output-schema.md`：
@@ -89,11 +104,14 @@ parallel Task(agent, {chapter, chapter_file, project_root}) for agent in selecte
 python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index save-review-metrics --data '@review_metrics.json'
 ```
 
+Codex runner 可以把这一步内置，但结果上必须等价：`index.db.review_metrics` 内有当前章节对应记录。
+
 ## 进入 Step 4 前闸门
 
 - `overall_score` 已生成。
 - `save-review-metrics` 已成功。
 - 审查报告中的 `issues`、`severity_counts` 可被 Step 4 直接消费。
+- Codex 下必须额外检查 `.webnovel/reviews/ch{chapter_padded}/aggregate.json` 存在且含 `selected_checkers` / `issues` / `severity_counts` / `overall_score`。
 - **时间线闸门（新增）**：若存在 `TIMELINE_ISSUE` 且 `severity >= high`，禁止进入 Step 4/5，必须先修复。
 
 ### 时间线闸门规则

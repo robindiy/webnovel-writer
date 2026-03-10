@@ -37,6 +37,34 @@ def test_extract_state_summary_accepts_dominant_key(tmp_path):
     assert "Ch11:fire" in text
 
 
+def test_extract_state_summary_treats_open_foreshadowing_as_active(tmp_path):
+    scripts_dir = Path(__file__).resolve().parents[2]
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+
+    from extract_chapter_context import extract_state_summary
+
+    state = {
+        "progress": {"current_chapter": 12, "total_words": 12345},
+        "plot_threads": {
+            "foreshadowing": [
+                {"content": "赵国威开始盯人", "status": "open", "urgency": 80},
+                {"content": "旧线索已回收", "status": "resolved", "urgency": 99},
+            ]
+        },
+    }
+
+    webnovel_dir = tmp_path / ".webnovel"
+    webnovel_dir.mkdir(parents=True, exist_ok=True)
+    (webnovel_dir / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    text = extract_state_summary(tmp_path)
+    assert "未回收伏笔" in text
+    assert "紧急伏笔" in text
+    assert "赵国威开始盯人" in text
+    assert "旧线索已回收" not in text
+
+
 def test_extract_chapter_outline_supports_hyphen_filename(tmp_path):
     scripts_dir = Path(__file__).resolve().parents[2]
     if str(scripts_dir) not in sys.path:

@@ -27,7 +27,7 @@ model: inherit
   "project_root": "{PROJECT_ROOT}",
   "storage_path": ".webnovel/",
   "state_file": ".webnovel/state.json",
-  "chapter_file": "正文/第{NNNN}章.md"
+  "chapter_file": "正文/第{volume_num}卷/第{chapter_short_padded}章.md"
 }
 ```
 
@@ -102,7 +102,7 @@ model: inherit
 | 时间锚点缺失 | **medium** | 无法确定章节时间，但不影响逻辑 |
 | 轻微时间模糊 | **low** | 时段不明确但不影响剧情 |
 
-> 输出 JSON 时，`issues[].severity` 必须使用小写枚举：`critical|high|medium|low`。
+> 输出 JSON 时，`issues[].severity` 必须使用小写枚举：`critical|high|medium|low|minor`。
 
 **Red Flags** (TIMELINE_ISSUE):
 ```

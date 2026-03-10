@@ -242,7 +242,11 @@ class TestStateManager:
             ],
             "relationships_new": [
                 {"from": "xiaoyan", "to": "hongyi_girl", "type": "相识", "description": "初次见面"}
-            ]
+            ],
+            "foreshadowing_notes": [
+                "[新增] 红衣女子来历可疑",
+                {"content": "[危机] 萧炎已经被人暗中盯上", "status": "open", "tier": "core"},
+            ],
         }
 
         # 先添加萧炎
@@ -257,8 +261,23 @@ class TestStateManager:
         changes = manager.get_state_changes("xiaoyan")
         assert len(changes) == 1
 
+        # 验证伏笔写入运行态
+        foreshadowing = manager._state.get("plot_threads", {}).get("foreshadowing", [])
+        assert len(foreshadowing) == 2
+        assert foreshadowing[0]["content"] == "红衣女子来历可疑"
+        assert foreshadowing[0]["status"] == "未回收"
+        assert foreshadowing[0]["planted_chapter"] == 100
+        assert foreshadowing[1]["tier"] == "核心"
+        assert foreshadowing[1]["status"] == "未回收"
+
         # 验证进度更新
         assert manager.get_current_chapter() == 100
+
+        manager.save_state()
+        saved = json.loads(temp_project.state_file.read_text(encoding="utf-8"))
+        saved_foreshadowing = saved.get("plot_threads", {}).get("foreshadowing", [])
+        assert len(saved_foreshadowing) == 2
+        assert saved_foreshadowing[1]["chapter_planted"] == 100
 
     def test_save_state_with_init_project_schema(self, temp_project):
         """回归：init_project 生成的 state.json，StateManager 仍应可写入。(v5.1 SQLite-only)"""

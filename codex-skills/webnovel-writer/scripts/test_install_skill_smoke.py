@@ -36,3 +36,24 @@ def test_build_delegate_command_uses_repo_config(tmp_path):
 
     assert command[1].endswith("webnovel-writer/scripts/codex_cli.py")
     assert command[-2:] == ["/webnovel-writer:webnovel-write", "1"]
+
+
+def test_main_handles_keyboardinterrupt(monkeypatch, capsys):
+    helper = _load_helper()
+
+    monkeypatch.setattr(
+        helper,
+        "build_delegate_command",
+        lambda argv, skill_root=None: ["python3", "dummy.py", *list(argv)],
+    )
+    monkeypatch.setattr(
+        helper.subprocess,
+        "run",
+        lambda command: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    exit_code = helper.main(["/webnovel-writer:webnovel-init"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 130
+    assert captured.err == ""

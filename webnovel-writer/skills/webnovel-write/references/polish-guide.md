@@ -24,7 +24,7 @@ version: "6.0"
 
 ```json
 {
-  "chapter_file": "正文/第0123章.md",
+  "chapter_file": "正文/第3卷/第123章.md",
   "overall_score": 82,
   "issues": [
     {"agent": "consistency-checker", "type": "POWER_CONFLICT", "severity": "critical", "location": "第6段", "suggestion": "境界越权"},

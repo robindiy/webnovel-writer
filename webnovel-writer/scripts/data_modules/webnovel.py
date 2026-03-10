@@ -28,6 +28,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+_THIS_FILE = Path(__file__).resolve()
+_SCRIPTS_DIR = _THIS_FILE.parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 from runtime_compat import normalize_windows_path
 from project_locator import resolve_project_root, write_current_project_pointer, update_global_registry_current_project
 
@@ -169,6 +174,9 @@ def main() -> None:
     p_context = sub.add_parser("context", help="转发到 context_manager")
     p_context.add_argument("args", nargs=argparse.REMAINDER)
 
+    p_review = sub.add_parser("review", help="转发到 review_agents_runner.py")
+    p_review.add_argument("args", nargs=argparse.REMAINDER)
+
     p_migrate = sub.add_parser("migrate", help="转发到 migrate_state_to_sqlite")
     p_migrate.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -195,19 +203,30 @@ def main() -> None:
     p_extract_context.add_argument("--chapter", type=int, required=True, help="目标章节号")
     p_extract_context.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
 
+    p_sync_chapter = sub.add_parser("sync-chapter-data", help="同步章节索引/追读力等衍生数据")
+    p_sync_chapter.add_argument("--chapter", type=int, default=None, help="仅同步指定章节")
+    p_sync_chapter.add_argument("--chapter-file", default=None, help="指定章节文件路径（可选）")
+
     # 兼容：允许 `--project-root` 出现在任意位置（减少 agents/skills 拼命令的出错率）
-    from .cli_args import normalize_global_project_root
+    try:
+        from .cli_args import normalize_global_project_root
+    except ImportError:
+        from cli_args import normalize_global_project_root
 
     argv = normalize_global_project_root(sys.argv[1:])
-    args = parser.parse_args(argv)
+    args, unknown = parser.parse_known_args(argv)
 
     # where/use 直接执行
     if hasattr(args, "func"):
+        if unknown:
+            parser.error(f"unrecognized arguments: {' '.join(unknown)}")
         code = int(args.func(args) or 0)
         raise SystemExit(code)
 
     tool = args.tool
     rest = list(getattr(args, "args", []) or [])
+    if unknown:
+        rest.extend(unknown)
     # argparse.REMAINDER 可能以 `--` 开头占位，这里去掉
     if rest[:1] == ["--"]:
         rest = rest[1:]
@@ -233,6 +252,8 @@ def main() -> None:
         raise SystemExit(_run_data_module("entity_linker", [*forward_args, *rest]))
     if tool == "context":
         raise SystemExit(_run_data_module("context_manager", [*forward_args, *rest]))
+    if tool == "review":
+        raise SystemExit(_run_script("review_agents_runner.py", [*forward_args, *rest]))
     if tool == "migrate":
         raise SystemExit(_run_data_module("migrate_state_to_sqlite", [*forward_args, *rest]))
 
@@ -249,6 +270,15 @@ def main() -> None:
     if tool == "extract-context":
         return_args = [*forward_args, "--chapter", str(args.chapter), "--format", str(args.format)]
         raise SystemExit(_run_script("extract_chapter_context.py", return_args))
+    if tool == "sync-chapter-data":
+        sync_args = list(forward_args)
+        if args.chapter is not None:
+            sync_args.extend(["--chapter", str(args.chapter)])
+        if args.chapter_file:
+            sync_args.extend(["--chapter-file", str(args.chapter_file)])
+        if rest:
+            sync_args.extend(rest)
+        raise SystemExit(_run_script("sync_chapter_data.py", sync_args))
 
     raise SystemExit(2)
 

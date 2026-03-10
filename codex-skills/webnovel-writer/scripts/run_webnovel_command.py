@@ -26,9 +26,12 @@ def build_delegate_command(argv: Sequence[str], *, skill_root: Optional[Path] = 
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    command = build_delegate_command(list(argv or sys.argv[1:]))
-    proc = subprocess.run(command)
-    return int(proc.returncode or 0)
+    try:
+        command = build_delegate_command(list(argv or sys.argv[1:]))
+        proc = subprocess.run(command)
+        return int(proc.returncode or 0)
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

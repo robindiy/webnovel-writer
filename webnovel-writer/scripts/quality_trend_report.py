@@ -50,7 +50,7 @@ def _percent(value: float) -> str:
 
 def _build_review_rows(records: List[Dict[str, Any]]) -> List[str]:
     if not records:
-        return ["| - | - | - | - | - | - |", "| - | - | - | - | - | - |"]
+        return ["| - | - | - | - | - | - | - |", "| - | - | - | - | - | - | - |"]
 
     rows: List[str] = []
     sorted_records = sorted(
@@ -63,10 +63,11 @@ def _build_review_rows(records: List[Dict[str, Any]]) -> List[str]:
         high = _to_int(severities.get("high"))
         medium = _to_int(severities.get("medium"))
         low = _to_int(severities.get("low"))
+        minor = _to_int(severities.get("minor"))
         range_text = f"{_to_int(row.get('start_chapter'))}-{_to_int(row.get('end_chapter'))}"
         score = _to_float(row.get("overall_score"))
         rows.append(
-            f"| {range_text} | {score:.1f} | {critical} | {high} | {medium} | {low} |"
+            f"| {range_text} | {score:.1f} | {critical} | {high} | {medium} | {low} | {minor} |"
         )
     return rows
 
@@ -165,8 +166,8 @@ def build_quality_report(
 
     lines.append("## 审查区间趋势")
     lines.append("")
-    lines.append("| 区间 | 总分 | Critical | High | Medium | Low |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
+    lines.append("| 区间 | 总分 | Critical | High | Medium | Low | Minor |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
     lines.extend(_build_review_rows(review_records))
     lines.append("")
 
@@ -185,7 +186,7 @@ def build_quality_report(
     lines.append("")
     lines.append("| 等级 | 数量 |")
     lines.append("|---|---:|")
-    for level in ("critical", "high", "medium", "low"):
+    for level in ("critical", "high", "medium", "low", "minor"):
         lines.append(f"| {level} | {_to_int(severity_totals.get(level))} |")
     lines.append("")
 

@@ -44,6 +44,10 @@ def _skills_root() -> Path:
     return _repo_root() / "skills"
 
 
+def _codex_skills_root() -> Path:
+    return _repo_root().parent / "codex-skills"
+
+
 COMMAND_SPECS: Dict[str, CommandSpec] = {
     "webnovel-init": CommandSpec("webnovel-init", "webnovel-init", requires_project=False, shell_aliases=("init",)),
     "webnovel-plan": CommandSpec("webnovel-plan", "webnovel-plan", shell_aliases=("plan",)),
@@ -53,6 +57,11 @@ COMMAND_SPECS: Dict[str, CommandSpec] = {
     "webnovel-query": CommandSpec("webnovel-query", "webnovel-query", shell_aliases=("query",)),
     "webnovel-resume": CommandSpec("webnovel-resume", "webnovel-resume", shell_aliases=("resume",)),
     "webnovel-learn": CommandSpec("webnovel-learn", "webnovel-learn", requires_project=False, shell_aliases=("learn",)),
+    "webnovel-controller-demo": CommandSpec(
+        "webnovel-controller-demo",
+        "webnovel-writer",
+        shell_aliases=("controller-demo",),
+    ),
 }
 
 
@@ -68,12 +77,13 @@ def _alias_map() -> Dict[str, str]:
 def _build_parsed_command(spec: CommandSpec, args: Iterable[str]) -> ParsedCommand:
     normalized_args = tuple(str(arg) for arg in args)
     slash_command = " ".join([spec.slash_name, *normalized_args]).strip()
+    skill_root = _codex_skills_root() if spec.skill_name == "webnovel-writer" else _skills_root()
     return ParsedCommand(
         name=spec.name,
         args=normalized_args,
         slash_command=slash_command,
         skill_name=spec.skill_name,
-        skill_path=_skills_root() / spec.skill_name / "SKILL.md",
+        skill_path=skill_root / spec.skill_name / "SKILL.md",
         requires_project=spec.requires_project,
     )
 
@@ -113,6 +123,10 @@ def _parse_natural_language_text(text: str) -> ParsedCommand:
 
     if _contains_command_name(raw, "webnovel-write"):
         return _build_parsed_command(COMMAND_SPECS["webnovel-write"], _extract_range_arg(raw, "章"))
+    shorthand_match = re.fullmatch(r"webnovel-writer\s+(\d+)(?:\s+--(fast|minimal))?", raw, flags=re.IGNORECASE)
+    if shorthand_match:
+        extra = tuple(filter(None, (shorthand_match.group(1), f"--{shorthand_match.group(2)}" if shorthand_match.group(2) else None)))
+        return _build_parsed_command(COMMAND_SPECS["webnovel-write"], extra)
     if _contains_command_name(raw, "webnovel-review"):
         return _build_parsed_command(COMMAND_SPECS["webnovel-review"], _extract_range_arg(raw, "章"))
     if _contains_command_name(raw, "webnovel-plan"):
@@ -131,6 +145,8 @@ def _parse_natural_language_text(text: str) -> ParsedCommand:
         return _build_parsed_command(COMMAND_SPECS["webnovel-review"], _extract_range_arg(raw, "章"))
     if "dashboard" in normalized or "面板" in raw:
         return _build_parsed_command(COMMAND_SPECS["webnovel-dashboard"], ())
+    if any(phrase in raw for phrase in ("开始控制器测试", "运行控制器验证")) or "controller demo" in normalized:
+        return _build_parsed_command(COMMAND_SPECS["webnovel-controller-demo"], ())
     if any(keyword in raw for keyword in ("查询", "检索")):
         return _build_parsed_command(COMMAND_SPECS["webnovel-query"], ())
     if any(keyword in raw for keyword in ("恢复", "继续")) and any(keyword in raw for keyword in ("任务", "流程", "工作流")):
@@ -169,6 +185,12 @@ def parse_argv(argv: Sequence[str]) -> ParsedCommand:
 
     if first.startswith(COMMAND_PREFIX):
         return parse_command_text(" ".join(str(part) for part in argv if str(part).strip()))
+
+    lowered_first = first.casefold()
+    if lowered_first == "webnovel-writer" and len(argv) > 1:
+        second = str(argv[1]).strip()
+        if second.isdigit():
+            return _build_parsed_command(COMMAND_SPECS["webnovel-write"], argv[1:])
 
     canonical_name = _alias_map().get(first)
     if canonical_name is None:

@@ -99,11 +99,23 @@ cat "${SKILL_ROOT}/references/pacing-control.md"
 cat "$PROJECT_ROOT/.webnovel/state.json"
 ```
 
-## Step 3: 并行调用检查员（Task）
+## Step 3: 并行调用检查员（Desktop strict / shell source-runner）
+
+Desktop strict 入口（必做）：
+```bash
+python "${SCRIPTS_DIR}/review_prepare.py" --project-root "${PROJECT_ROOT}" --start-chapter "{start}" --end-chapter "{end}" --mode auto
+```
+
+硬规则：
+- 在 Codex Desktop 中，不得以 `review_agents_runner.py` 作为 Step 3 主入口。
+- 必须先生成 `.webnovel/reviews/chNNNN/checkers/*.prompt.txt`
+- 再逐个生成同名 `.json`
+- 最后再执行 `review_finalize.py`
 
 **调用约束**:
-- 必须通过 `Task` 工具调用审查 subagent，禁止主流程直接内联审查结论。
-- 各 subagent 结果全部返回后再生成总评与优先级。
+- Codex Desktop 中必须按“准备 prompt -> 独立产出 checker JSON -> 汇总落库”的严格链路执行，禁止把 6 维审查压缩成一段主观总结。
+- Shell/TUI 模式仍可执行 source-backed runner。
+- 各 checker 结果全部返回后再生成总评与优先级。
 
 **Core**:
 - `consistency-checker`
@@ -115,7 +127,37 @@ cat "$PROJECT_ROOT/.webnovel/state.json"
 - `high-point-checker`
 - `pacing-checker`
 
+**Codex Desktop 执行命令**:
+```bash
+python "${SCRIPTS_DIR}/review_prepare.py" --project-root "${PROJECT_ROOT}" --start-chapter "{start}" --end-chapter "{end}" --mode auto
+```
+
+对每一章必须执行：
+- 读取 `.webnovel/reviews/chNNNN/checkers/{checker}.prompt.txt`
+- 以该 prompt 作为该 checker 的唯一输入
+- 仅输出合法 JSON 到 `.webnovel/reviews/chNNNN/checkers/{checker}.json`
+- 不得把多个 checker 合并成一个文件
+
+全部 checker JSON 写完后，必须执行：
+```bash
+python "${SCRIPTS_DIR}/review_finalize.py" --project-root "${PROJECT_ROOT}" --start-chapter "{start}" --end-chapter "{end}"
+```
+
+**Shell/TUI 执行命令**:
+```bash
+python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" review --start-chapter "{start}" --end-chapter "{end}" --mode auto
+```
+
+上述链路会自动完成：
+- 每章 `.webnovel/reviews/chNNNN/` 产物
+- 区间汇总 `.webnovel/reviews/range-{start_padded}-{end_padded}/aggregate.json`
+- 区间报告 `审查报告/第{start}-{end}章审查报告.md`
+- `review_metrics` 落库
+- 单章/分章审查若 `aggregate.pass=true`，自动执行 `sync-chapter-data --chapter N`，把 dashboard 依赖的 `chapters/scenes/chapter_reading_power` 刷新到最新正文
+
 ## Step 4: 生成审查报告
+
+Codex Desktop 下此步骤改为**核验** `review_finalize.py` 已生成的报告与聚合产物，不再手工重写。
 
 保存到：`审查报告/第{start}-{end}章审查报告.md`
 
@@ -157,13 +199,27 @@ cat "$PROJECT_ROOT/.webnovel/state.json"
 }
 ```
 
-注意：此处只生成审查指标 JSON；落库见 Step 5。
+Codex 硬要求：
+- 不得手写临时 `review_metrics.json` 冒充 Step 3 结果
+- 不得跳过 `.webnovel/reviews/chNNNN/checkers/*.json`
+- 必须检查 `.webnovel/reviews/range-{start_padded}-{end_padded}/aggregate.json` 存在
+- 必须检查当前区间对应的 `report_file` 已存在
+- 若缺任何产物，停止流程并报错
 
-## Step 5: 保存审查指标到 index.db（必做）
+## Step 5: 保存审查指标到 index.db（Codex 下改为核验）
 
 ```bash
 python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index save-review-metrics --data '@review_metrics.json'
 ```
+
+Codex Desktop 下这一步由 `review_finalize.py` 内置完成；这里只做核验，例如：
+```bash
+python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index get-recent-review-metrics --limit 1
+```
+
+补充约束：
+- 审查未通过时不得补库，避免把“待返工版本”刷新进 dashboard
+- 若返工后重新运行 `/webnovel-review`，新的通过结果会再次触发 `sync-chapter-data`，覆盖旧的章节派生数据
 
 ## Step 6: 写回审查记录到 state.json（必做）
 

@@ -20,7 +20,7 @@ model: inherit
 ```json
 {
   "chapter": 100,
-  "chapter_file": "正文/第0100章.md",
+  "chapter_file": "正文/第2卷/第100章.md",
   "review_score": 85,
   "project_root": "D:/wk/斗破苍穹",
   "storage_path": ".webnovel/",
@@ -80,7 +80,7 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" where
 ### Step A: 加载上下文 (v5.1 SQL 查询)
 
 使用 Read 工具读取章节正文:
-- 章节正文: `正文/第0100章.md`
+- 章节正文: `正文/第2卷/第100章.md`
 
 使用 Bash 工具从 index.db 查询已有实体:
  ```bash
@@ -172,6 +172,7 @@ hook_strength: "strong"
 ```bash
 python "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" rag index-chapter \
   --chapter 100 \
+  --chapter-file "{chapter_file}" \
   --scenes '[...]' \
   --summary "本章摘要文本"
 ```
@@ -181,7 +182,7 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" rag index-ch
 - 子块: `chunk_type='scene'`, `chunk_id='ch0100_s{scene_index}'`, `parent_chunk_id='ch0100_summary'`
 - `source_file`:
   - summary: `summaries/ch0100.md`
-  - scene: `正文/第0100章.md#scene_{scene_index}`
+  - scene: `正文/第2卷/第100章.md#scene_{scene_index}`
 
 ### Step H: 风格样本评估
 
@@ -259,6 +260,24 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" style extrac
   ]
 }
 ```
+
+### Step K: Dashboard 索引补齐（Codex 路径必做）
+
+在 `state process-chapter`、摘要写入、实体/关系/别名落库之后，追加执行：
+
+```bash
+python "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" sync-chapter-data --chapter {chapter}
+```
+
+目的：
+- 回填 `index.db.chapters`
+- 回填 `index.db.scenes`
+- 回填 `index.db.chapter_reading_power`
+
+说明：
+- 这一步不是替代前面的数据写入，而是把 dashboard / context 依赖的章节派生数据补齐。
+- 审查 runner 在 `aggregate.pass=true` 时可能已经先同步过一次，但那次更偏向“审查通过版本可见”；
+- Data Agent 写回 `state.json.chapter_meta`、摘要、实体出场后，仍要再次执行这一步，把最终结构化结果覆盖回 `章节一览 / 追读力`。
 
 ---
 

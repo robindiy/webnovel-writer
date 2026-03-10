@@ -65,7 +65,7 @@ fi
 python -m dashboard.server --project-root "${PROJECT_ROOT}"
 ```
 
-启动后会自动打开浏览器访问 `http://127.0.0.1:8765`。
+启动后会自动打开浏览器访问 `http://127.0.0.1:18765`。
 
 如不需要自动打开浏览器，使用：
 

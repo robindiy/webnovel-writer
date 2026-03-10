@@ -8,7 +8,7 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 ## 目标
 
-- 以稳定流程产出可发布章节：`正文/第{NNNN}章.md`。
+- 以稳定流程产出可发布章节：`正文/第{volume_num}卷/第{chapter_short_padded}章.md`。
 - 默认章节字数目标：2000-2500（用户或大纲明确覆盖时从其约定）。
 - 保证审查、润色、数据回写完整闭环，避免“写完即丢上下文”。
 - 输出直接可被后续章节消费的结构化数据：`review_metrics`、`summaries`、`chapter_meta`。
@@ -28,7 +28,7 @@ allowed-tools: Read Write Edit Grep Bash Task
 - `/webnovel-write --minimal`：Step 1 → 2A → 3（仅3个基础审查）→ 4 → 5 → 6
 
 最小产物（所有模式）：
-- `正文/第{NNNN}章.md`
+- `正文/第{volume_num}卷/第{chapter_short_padded}章.md`
 - `index.db.review_metrics` 新纪录（含 `overall_score`）
 - `.webnovel/summaries/ch{NNNN}.md`
 - `.webnovel/state.json` 的进度与 `chapter_meta` 更新
@@ -94,10 +94,33 @@ allowed-tools: Read Write Edit Grep Bash Task
 ## 工具策略（按需）
 
 - `Read/Grep`：读取 `state.json`、大纲、章节正文与参考文件。
-- `Bash`：运行 `extract_chapter_context.py`、`index_manager`、`workflow_manager`。
-- `Task`：调用 `context-agent`、审查 subagent、`data-agent` 并行执行。
+- `Bash`：运行 `extract_chapter_context.py`、`review_prepare.py`、`review_finalize.py`、`index_manager`、`workflow_manager`。
+- `Task`：Claude Code 可用于 `context-agent` / `data-agent` / 审查 subagent；Codex Desktop 由当前会话严格扮演这些 agent，不得跳步。
 
 ## 交互流程
+
+## Desktop Strict Adapter（Codex Desktop 必做）
+
+如果 helper 返回：
+- `action.type=follow_skill`
+- `action.execution_model=desktop_strict_follow_skill`
+
+则不能直接自由执行写作流程，必须先走下面这条 artifact chain：
+
+```bash
+python "${SCRIPTS_DIR}/write_prepare.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal}
+```
+
+然后严格按阶段推进：
+1. 读取当前阶段的 `*.prompt.txt`
+2. 只生成该阶段要求的 `*.result.json`
+3. 运行 `write_finalize.py --stage ...`
+4. 由 `write_finalize.py` 生成下一阶段 prompt/schema 或拉起审查准备
+
+禁止事项：
+- 不得在 Codex Desktop 中直接以 `review_agents_runner.py` 作为 Step 3 主入口
+- 不得在 Step 5 前手写 `.webnovel/tmp/chapter_{N}.json` 跳过前序阶段
+- 不得把 Step 2B / Step 4 / Step 5 仅当作 workflow 标记；必须留下结构化产物
 
 ### Step 0：预检与上下文最小加载
 
@@ -111,6 +134,8 @@ allowed-tools: Read Write Edit Grep Bash Task
   - `SCRIPTS_DIR`：脚本目录（固定 `${CLAUDE_PLUGIN_ROOT}/scripts`）
   - `chapter_num`：当前章号（整数）
   - `chapter_padded`：四位章号（如 `0007`）
+  - `chapter_short_padded`：三位章号（如 `007`）
+  - `volume_num`：卷号（默认每 50 章一卷；第 1-50 章为第 1 卷）
 
 环境设置（bash 命令执行前）：
 ```bash
@@ -136,6 +161,11 @@ fi
 
 # 解析真实书项目根（后续所有 Read/Write 路径都必须以 $PROJECT_ROOT 为前缀，避免写到工作区根目录）
 export PROJECT_ROOT="$(python "${SCRIPTS_DIR}/webnovel.py" --project-root "${WORKSPACE_ROOT}" where)"
+
+# 默认章节文件使用卷布局
+chapter_padded="$(printf '%04d' "${chapter_num}")"
+chapter_short_padded="$(printf '%03d' "${chapter_num}")"
+volume_num="$(( (chapter_num - 1) / 50 + 1 ))"
 ```
 
 输出：
@@ -164,6 +194,19 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow co
 
 ### Step 1：Context Agent（内置 Contract v2，生成直写执行包）
 
+Desktop strict 命令：
+```bash
+python "${SCRIPTS_DIR}/write_prepare.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal}
+```
+
+然后：
+- 读取 `.webnovel/write_workflow/ch{chapter_padded}/context_agent.prompt.txt`
+- 只输出合法 JSON 到 `.webnovel/write_workflow/ch{chapter_padded}/context_agent.result.json`
+- 再执行：
+```bash
+python "${SCRIPTS_DIR}/write_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal} --stage context
+```
+
 使用 Task 调用 `context-agent`，参数：
 - `chapter`
 - `project_root`
@@ -183,13 +226,21 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow co
 
 ### Step 2A：正文起草
 
+Desktop strict：
+- 读取 `.webnovel/write_workflow/ch{chapter_padded}/draft.prompt.txt`
+- 输出 `.webnovel/write_workflow/ch{chapter_padded}/draft.result.json`
+- 再执行：
+```bash
+python "${SCRIPTS_DIR}/write_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal} --stage draft
+```
+
 执行前必须加载：
 ```bash
 cat "${SKILL_ROOT}/../../references/shared/core-constraints.md"
 ```
 
 硬要求：
-- 只输出纯正文到 `正文/第{chapter_padded}章.md`。
+- 只输出纯正文到 `正文/第{volume_num}卷/第{chapter_short_padded}章.md`。
 - 默认按 2000-2500 字执行；若大纲为关键战斗章/高潮章/卷末章或用户明确指定，则按大纲/用户优先。
 - 禁止占位符正文（如 `[TODO]`、`[待补充]`）。
 - 保留承接关系：若上章有明确钩子，本章必须回应（可部分兑现）。
@@ -199,6 +250,14 @@ cat "${SKILL_ROOT}/../../references/shared/core-constraints.md"
 
 ### Step 2B：风格适配（`--fast` / `--minimal` 跳过）
 
+Desktop strict：
+- standard 模式下读取 `.webnovel/write_workflow/ch{chapter_padded}/style_adapter.prompt.txt`
+- 输出 `.webnovel/write_workflow/ch{chapter_padded}/style_adapter.result.json`
+- 再执行：
+```bash
+python "${SCRIPTS_DIR}/write_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode standard --stage style
+```
+
 执行前加载：
 ```bash
 cat "${SKILL_ROOT}/references/style-adapter.md"
@@ -207,11 +266,14 @@ cat "${SKILL_ROOT}/references/style-adapter.md"
 硬要求：
 - 只做表达层转译，不改剧情事实、事件顺序、角色行为结果、设定规则。
 - 对“模板腔、说明腔、机械腔”做定向改写，为 Step 4 留出问题修复空间。
+- 必须至少做 2 轮：Pass A 局部改写，Pass B 全章重读后再修；不得只改一轮就交稿。
+- 必须直接修改章节文件，再输出 `style_adapter.result.json`；JSON 中的 `content` 必须与最终文件一致。
+- `style_adapter.result.json` 必须包含 `pass_reports` 与 `full_reread_count`，且至少有 1 次全章重读。
 
 输出：
 - 风格化正文（覆盖原章节文件）。
 
-### Step 3：审查（auto 路由，必须由 Task 子代理执行）
+### Step 3：审查（full 路由；Desktop strict / shell source-runner）
 
 执行前加载：
 ```bash
@@ -219,33 +281,58 @@ cat "${SKILL_ROOT}/references/step-3-review-gate.md"
 ```
 
 调用约束：
-- 必须用 `Task` 调用审查 subagent，禁止主流程伪造审查结论。
+- 在 Codex Desktop 中，必须先执行 `review_prepare.py` 生成 checker prompt，再逐个生成 checker JSON，最后执行 `review_finalize.py` 汇总；禁止主流程伪造审查结论。
+- 在 shell/TUI 中，仍可执行 source-backed runner。
+- 在 Claude Code 中，等价实现仍是 `Task` 调用审查 subagent。
 - 可并行发起审查，统一汇总 `issues/severity/overall_score`。
-- 默认使用 `auto` 路由：根据“本章执行合同 + 正文信号 + 大纲标签”动态选择审查器。
+- 写作主流程中，标准模式与 `--fast` 都必须使用 `full` 路由：6 个 checker 全跑。
 
-核心审查器（始终执行）：
+审查器（`full` 必跑 6 个）：
 - `consistency-checker`
 - `continuity-checker`
 - `ooc-checker`
-
-条件审查器（`auto` 命中时执行）：
 - `reader-pull-checker`
 - `high-point-checker`
 - `pacing-checker`
 
 模式说明：
-- 标准/`--fast`：核心 3 个 + auto 命中的条件审查器
+- 标准/`--fast`：固定 6 个 checker
 - `--minimal`：只跑核心 3 个（忽略条件审查器）
 
-审查指标落库（必做）：
+Codex Desktop 执行命令（必做）：
 ```bash
-# 统一入口 webnovel.py：无需 cd / PYTHONPATH，且自动注入 --project-root
-python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index save-review-metrics --data '@review_metrics.json'
+python "${SCRIPTS_DIR}/review_prepare.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --chapter-file "正文/第${volume_num}卷/第${chapter_short_padded}章.md" --mode full
+```
+
+对 `.webnovel/reviews/ch${chapter_padded}/checkers/*.prompt.txt` 中列出的每个 checker，必须：
+- 只读取对应 prompt 文件
+- 只输出合法 JSON 到同名 `.json`
+- 不得把多个 checker 合并成一个总评文件
+
+全部 checker JSON 写完后，必须执行：
+```bash
+python "${SCRIPTS_DIR}/review_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}"
+```
+
+审查完成后，在 Desktop strict 中还必须执行：
+```bash
+python "${SCRIPTS_DIR}/write_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal} --stage review-initial
+```
+
+Shell/TUI 执行命令（必做）：
+```bash
+python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" review --chapter "${chapter_num}" --chapter-file "正文/第${volume_num}卷/第${chapter_short_padded}章.md" --mode full
 ```
 
 硬要求：
+- 上述 runner 成功后，必须存在：
+  - `.webnovel/reviews/ch{chapter_padded}/aggregate.json`
+  - `.webnovel/reviews/ch{chapter_padded}/checkers/*.json`
+  - `审查报告/第{chapter_num}-{chapter_num}章审查报告.md`
+- `aggregate.json` 必须包含：`selected_checkers`、`issues`、`severity_counts`、`overall_score`。
+- 若 runner 失败、产物缺失，或 `aggregate.json` 缺少上述字段，必须停止流程；不得手写“审查总结”补位。
 - `--minimal` 也必须产出 `overall_score`。
-- 未落库 `review_metrics` 不得进入 Step 5。
+- 未落库 `review_metrics` 不得进入 Step 5。Codex runner 已内置落库，不要再手工伪造 `review_metrics.json`。
 
 ### Step 4：润色（问题修复优先）
 
@@ -253,23 +340,43 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index save-
 ```bash
 cat "${SKILL_ROOT}/references/polish-guide.md"
 cat "${SKILL_ROOT}/references/writing/typesetting.md"
+cat "${PROJECT_ROOT}/.webnovel/reviews/ch${chapter_padded}/aggregate.json"
 ```
 
 执行顺序：
 1. 修复 `critical`（必须）
 2. 修复 `high`（不能修复则记录 deviation）
 3. 处理 `medium/low`（按收益择优）
-4. 执行 Anti-AI 与 No-Poison 全文终检（必须输出 `anti_ai_force_check: pass/fail`）
+4. 基于修订后的章节文件，全章重读并执行 Anti-AI 全文终检（必须输出 `anti_ai_force_check: pass/fail`）
+5. 再次全章重读，执行 No-Poison 与 typesetting 终检，必要时继续修
+6. 必须重新执行一次 Step 3 的完整审查链，确认修订版 `aggregate.json` / 报告 / `review_metrics` 已覆盖旧版本
 
 输出：
 - 润色后正文（覆盖章节文件）
 - 变更摘要（至少含：修复项、保留项、deviation、`anti_ai_force_check`）
+- `polish.result.json` 必须包含 `pass_reports` 与 `full_reread_count`，且至少有 2 次全章重读。
+
+Step 4 输入契约（Codex 必须遵守）：
+- 审查问题源只能来自 `.webnovel/reviews/ch{chapter_padded}/aggregate.json` 的 `issues`
+- 不得凭空补写“假问题”或“假修复项”
+
+Desktop strict：
+- 输出 `.webnovel/write_workflow/ch{chapter_padded}/polish.result.json`
+- 再执行：
+```bash
+python "${SCRIPTS_DIR}/write_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal} --stage polish
+```
+- 随后必须重跑一遍 `review_prepare.py` + checker JSON + `review_finalize.py`
+- 最后执行：
+```bash
+python "${SCRIPTS_DIR}/write_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal} --stage review-final
+```
 
 ### Step 5：Data Agent（状态与索引回写）
 
-使用 Task 调用 `data-agent`，参数：
+当前会话必须严格扮演 `data-agent`，生成 `.webnovel/tmp/chapter_{chapter_num}.json`，然后执行数据回写脚本。参数：
 - `chapter`
-- `chapter_file="正文/第{chapter_padded}章.md"`
+- `chapter_file="正文/第{volume_num}卷/第{chapter_short_padded}章.md"`
 - `review_score=Step 3 overall_score`
 - `project_root`
 - `storage_path=.webnovel/`
@@ -280,6 +387,17 @@ cat "${SKILL_ROOT}/references/writing/typesetting.md"
 - `.webnovel/index.db`
 - `.webnovel/summaries/ch{chapter_padded}.md`
 - `.webnovel/observability/data_agent_timing.jsonl`（观测日志）
+
+Codex 补强步骤（必做）：
+```bash
+python "${SCRIPTS_DIR}/write_finalize.py" --project-root "${PROJECT_ROOT}" --chapter "${chapter_num}" --mode {standard|fast|minimal} --stage data
+```
+
+原因：
+- `state process-chapter` 只保证 `state.json` / `review_metrics` / `summaries` 等核心状态落地；
+- dashboard 的 `章节一览` 与 `追读力` 依赖 `index.db.chapters`、`index.db.scenes`、`index.db.chapter_reading_power`；
+- Step 3 的审查 runner 在 `aggregate.pass=true` 时会先做一次“审查通过后补库”；
+- 但 Step 5 会继续刷新 `state.json.chapter_meta` / `summaries` 等结构化源数据，所以 Step 5 结束后仍必须再执行一次 `sync-chapter-data`，把最终版本覆盖回去，不能只检查 `index.db` 文件是否存在。
 
 性能要求：
 - 读取 timing 日志最近一条；
@@ -302,12 +420,13 @@ git commit -m "Ch{chapter_num}: {title}"
 
 未满足以下条件前，不得结束流程：
 
-1. 章节正文文件存在且非空：`正文/第{chapter_padded}章.md`
+1. 章节正文文件存在且非空：`正文/第{volume_num}卷/第{chapter_short_padded}章.md`
 2. Step 3 已产出 `overall_score` 且 `review_metrics` 成功落库
 3. Step 4 已处理全部 `critical`，`high` 未修项有 deviation 记录
 4. Step 4 的 `anti_ai_force_check=pass`（基于全文检查；fail 时不得进入 Step 5）
 5. Step 5 已回写 `state.json`、`index.db`、`summaries/ch{chapter_padded}.md`
-6. 若开启性能观测，已读取最新 timing 记录并输出结论
+6. Step 5 后已执行 `sync-chapter-data --chapter {chapter_num}`，且 `chapters/scenes/chapter_reading_power` 对应章节可查询
+7. 若开启性能观测，已读取最新 timing 记录并输出结论
 
 ## 验证与交付
 
@@ -315,15 +434,17 @@ git commit -m "Ch{chapter_num}: {title}"
 
 ```bash
 test -f "${PROJECT_ROOT}/.webnovel/state.json"
-test -f "${PROJECT_ROOT}/正文/第${chapter_padded}章.md"
+test -f "${PROJECT_ROOT}/正文/第${volume_num}卷/第${chapter_short_padded}章.md"
 test -f "${PROJECT_ROOT}/.webnovel/summaries/ch${chapter_padded}.md"
 python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index get-recent-review-metrics --limit 1
+python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" sync-chapter-data --chapter "${chapter_num}"
 tail -n 1 "${PROJECT_ROOT}/.webnovel/observability/data_agent_timing.jsonl" || true
 ```
 
 成功标准：
 - 章节文件、摘要文件、状态文件齐全且内容可读。
 - 审查分数可追溯，`overall_score` 与 Step 5 输入一致。
+- 当前章节在 `index.db.chapters`、`index.db.scenes`、`index.db.chapter_reading_power` 中均存在记录。
 - 润色后未破坏大纲与设定约束。
 
 ## 失败处理（最小回滚）

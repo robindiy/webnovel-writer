@@ -27,6 +27,11 @@ try:
 except ImportError:  # pragma: no cover
     from scripts.chapter_paths import find_chapter_file, volume_num_for_chapter
 
+try:
+    from data_modules.state_validator import is_resolved_foreshadowing_status
+except ImportError:  # pragma: no cover
+    from scripts.data_modules.state_validator import is_resolved_foreshadowing_status
+
 
 def _ensure_scripts_path():
     scripts_dir = Path(__file__).resolve().parent
@@ -234,7 +239,14 @@ def extract_state_summary(project_root: Path) -> str:
     plot_threads = state.get("plot_threads", {}) if isinstance(state.get("plot_threads"), dict) else {}
     foreshadowing = plot_threads.get("foreshadowing", [])
     if isinstance(foreshadowing, list) and foreshadowing:
-        active = [row for row in foreshadowing if row.get("status") in {"active", "未回收"}]
+        active = [
+            row for row in foreshadowing
+            if isinstance(row, dict) and not is_resolved_foreshadowing_status(row.get("status"))
+        ]
+        if active:
+            active_list = [str(row.get("content") or "?")[:30] for row in active[:3] if str(row.get("content") or "").strip()]
+            if active_list:
+                summary_parts.append(f"**未回收伏笔**: {'; '.join(active_list)}")
         urgent = [row for row in active if row.get("urgency", 0) > 50]
         if urgent:
             urgent_list = [

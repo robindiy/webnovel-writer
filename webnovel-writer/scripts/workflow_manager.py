@@ -260,6 +260,61 @@ def start_step(step_id, step_name, progress_note=None):
     print(f"▶️ {step_id} 开始: {step_name}")
 
 
+def update_step(step_id, progress_note=None, status_detail=None):
+    """Update current running step progress note / status detail."""
+    state = load_state()
+    task = state.get("current_task")
+    if not task or not task.get("current_step"):
+        print("⚠️ 无活动 Step")
+        return
+
+    current_step = task["current_step"]
+    if current_step.get("id") != step_id:
+        print(f"⚠️ 当前 Step 为 {current_step.get('id')}，与 {step_id} 不一致，拒绝更新")
+        safe_append_call_trace(
+            "step_update_rejected",
+            {
+                "requested_step_id": step_id,
+                "active_step_id": current_step.get("id"),
+                "command": task.get("command"),
+            },
+        )
+        return
+
+    note_text = progress_note if progress_note is not None else current_step.get("progress_note")
+    if progress_note is not None:
+        current_step["progress_note"] = progress_note
+    if status_detail is not None:
+        current_step["status_detail"] = status_detail
+
+    heartbeat = now_iso()
+    current_step["running_at"] = heartbeat
+    task["last_heartbeat"] = heartbeat
+
+    history = current_step.setdefault("progress_history", [])
+    entry = {"timestamp": heartbeat}
+    if progress_note is not None:
+        entry["progress_note"] = progress_note
+    if status_detail is not None:
+        entry["status_detail"] = status_detail
+    history.append(entry)
+    current_step["progress_history"] = history[-50:]
+
+    save_state(state)
+    safe_append_call_trace(
+        "step_progress",
+        {
+            "step_id": step_id,
+            "command": task.get("command"),
+            "chapter": task.get("args", {}).get("chapter_num"),
+            "progress_note": note_text,
+            "status_detail": status_detail,
+        },
+    )
+    display = status_detail or note_text or "heartbeat"
+    print(f"⏳ {step_id} 更新: {display}")
+
+
 def complete_step(step_id, artifacts_json=None):
     """Mark step completed."""
     state = load_state()
@@ -750,6 +805,12 @@ if __name__ == "__main__":
     p_start_step.add_argument("--step-name", required=True, help="Step 名称")
     p_start_step.add_argument("--note", help="进度备注")
 
+    p_update_step = subparsers.add_parser("update-step", help="更新 Step 进度")
+    add_project_root_arg(p_update_step)
+    p_update_step.add_argument("--step-id", required=True, help="Step ID")
+    p_update_step.add_argument("--note", help="进度备注")
+    p_update_step.add_argument("--status-detail", help="状态细节")
+
     p_complete_step = subparsers.add_parser("complete-step", help="完成 Step")
     add_project_root_arg(p_complete_step)
     p_complete_step.add_argument("--step-id", required=True, help="Step ID")
@@ -785,6 +846,8 @@ if __name__ == "__main__":
         start_task(args.command, {"chapter_num": args.chapter})
     elif args.action == "start-step":
         start_step(args.step_id, args.step_name, args.note)
+    elif args.action == "update-step":
+        update_step(args.step_id, args.note, args.status_detail)
     elif args.action == "complete-step":
         complete_step(args.step_id, args.artifacts)
     elif args.action == "complete-task":

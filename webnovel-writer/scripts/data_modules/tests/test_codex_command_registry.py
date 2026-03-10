@@ -88,3 +88,23 @@ def test_parse_natural_language_review_range_command():
     assert command.name == "webnovel-review"
     assert command.args == ("1-5",)
     assert command.slash_command == "/webnovel-writer:webnovel-review 1-5"
+
+
+def test_parse_shell_skill_name_as_write_shorthand():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["webnovel-writer", "16"])
+
+    assert command.name == "webnovel-write"
+    assert command.args == ("16",)
+    assert command.slash_command == "/webnovel-writer:webnovel-write 16"
+
+
+def test_parse_natural_language_skill_name_shorthand():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["webnovel-writer 16"])
+
+    assert command.name == "webnovel-write"
+    assert command.args == ("16",)
+    assert command.slash_command == "/webnovel-writer:webnovel-write 16"

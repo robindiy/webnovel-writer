@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchJSON, subscribeSSE } from './api.js'
 import ForceGraph3D from 'react-force-graph-3d'
+import * as THREE from 'three'
 
 // ====================================================================
 // 主应用
@@ -20,18 +21,35 @@ export default function App() {
 
     useEffect(() => { loadProjectInfo() }, [loadProjectInfo, refreshKey])
 
+    const refreshTimerRef = useRef(null)
+
     // SSE 订阅
     useEffect(() => {
+        const scheduleRefresh = () => {
+            if (refreshTimerRef.current) return
+            refreshTimerRef.current = window.setTimeout(() => {
+                setRefreshKey(k => k + 1)
+                refreshTimerRef.current = null
+            }, 350)
+        }
+
         const unsub = subscribeSSE(
             () => {
-                setRefreshKey(k => k + 1)
+                scheduleRefresh()
             },
             {
                 onOpen: () => setConnected(true),
                 onError: () => setConnected(false),
             },
         )
-        return () => { unsub(); setConnected(false) }
+        return () => {
+            if (refreshTimerRef.current) {
+                window.clearTimeout(refreshTimerRef.current)
+                refreshTimerRef.current = null
+            }
+            unsub()
+            setConnected(false)
+        }
     }, [])
 
     const title = projectInfo?.project_info?.title || '未加载'
@@ -82,6 +100,162 @@ const NAV_ITEMS = [
     { id: 'reading', icon: '🔥', label: '追读力' },
 ]
 
+const ENTITY_TYPE_COLORS = {
+    '角色': '#4f8ff7',
+    '地点': '#34d399',
+    '场景': '#22c55e',
+    '星球': '#22d3ee',
+    '神仙': '#f59e0b',
+    '势力': '#8b5cf6',
+    '招式': '#ef4444',
+    '法宝': '#ec4899',
+    '金手指': '#14b8a6',
+    '物品': '#f59e0b',
+}
+
+const RELATION_VISUALS = [
+    {
+        label: '敌对 / 冲突',
+        color: '#d7263d',
+        width: 2.8,
+        matches: ['敌', '仇', '杀', '追杀', '死战', '冲突', '对抗', '背叛', '威胁', '猎杀', '围攻'],
+    },
+    {
+        label: '盟友 / 信任',
+        color: '#2ec27e',
+        width: 2.4,
+        matches: ['盟', '友', '信任', '合作', '守护', '保护', '帮助', '支持', '结伴', '搭档', '同伴', '认可'],
+    },
+    {
+        label: '亲缘 / 师承',
+        color: '#f5a524',
+        width: 2.4,
+        matches: ['亲属', '血缘', '家人', '兄妹', '兄弟', '姐妹', '父子', '母子', '母女', '父女', '师徒', '恋人', '夫妻'],
+    },
+    {
+        label: '契约 / 持有 / 从属',
+        color: '#8b5cf6',
+        width: 2.2,
+        matches: ['契约', '持有', '拥有', '绑定', '从属', '命令', '控制', '附着', '继承', '主仆'],
+    },
+    {
+        label: '试探 / 利用 / 博弈',
+        color: '#ff8c42',
+        width: 2.0,
+        matches: ['利用', '试探', '怀疑', '监视', '交易', '博弈', '拉拢', '算计', '调查'],
+    },
+]
+
+const DEFAULT_RELATION_VISUAL = { label: '中立 / 未分类', color: '#26a8ff', width: 1.7 }
+
+const NODE_SIZE_LEGEND = [
+    { tier: '核心', sizeClass: 'size-large', desc: '主角 / 主线核心人物' },
+    { tier: '重要', sizeClass: 'size-medium-large', desc: '卷核心角色或关键实体' },
+    { tier: '次要', sizeClass: 'size-medium', desc: '稳定配角或阶段性关键点' },
+    { tier: '装饰', sizeClass: 'size-small', desc: '短暂出场或背景实体' },
+]
+
+function buildNodeSprite(label, radius) {
+    const text = String(label || '').trim() || '未命名'
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    const diameter = Math.max(120, radius * 28)
+    const fontSize = text.length <= 4 ? 54 : text.length <= 6 ? 42 : text.length <= 8 ? 34 : 28
+    const paddingX = 18
+    const paddingY = 12
+    const font = `700 ${fontSize}px "Noto Sans SC", sans-serif`
+
+    ctx.font = font
+    const textWidth = Math.ceil(ctx.measureText(text).width)
+    canvas.width = Math.max(Math.ceil(diameter * 1.5), textWidth + paddingX * 2)
+    canvas.height = Math.max(Math.ceil(diameter * 0.72), fontSize + paddingY * 2)
+
+    ctx.font = font
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = 'rgba(24, 18, 10, 0.95)'
+    ctx.lineWidth = 12
+    ctx.fillStyle = '#fffaf0'
+    ctx.shadowColor = 'rgba(24, 18, 10, 0.45)'
+    ctx.shadowBlur = 14
+    ctx.shadowOffsetY = 2
+    ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 1)
+    ctx.shadowBlur = 0
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 1)
+
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    const material = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+    })
+    const sprite = new THREE.Sprite(material)
+    sprite.scale.set(Math.max(radius * 2.25, canvas.width * 0.026), Math.max(radius * 0.9, canvas.height * 0.026), 1)
+    return sprite
+}
+
+function buildGraphNodeObject(node) {
+    const radius = Math.max(4.2, Number(node?.val || 2) * 1.02)
+    const group = new THREE.Group()
+    const sphere = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 18, 18),
+        new THREE.MeshLambertMaterial({
+            color: node?.color || '#5c6078',
+            emissive: node?.color || '#5c6078',
+            emissiveIntensity: 0.12,
+            transparent: true,
+            opacity: 0.96,
+        }),
+    )
+    const shell = new THREE.Mesh(
+        new THREE.SphereGeometry(radius * 1.08, 18, 18),
+        new THREE.MeshBasicMaterial({
+            color: node?.color || '#5c6078',
+            transparent: true,
+            opacity: 0.15,
+            side: THREE.BackSide,
+        }),
+    )
+    const label = buildNodeSprite(node?.name, radius)
+    label.position.set(0, 0, radius + 0.25)
+    group.add(sphere)
+    group.add(shell)
+    group.add(label)
+    return group
+}
+
+function normalizeTier(tier) {
+    const value = String(tier || '').trim()
+    if (!value) return '装饰'
+    return value
+}
+
+function computeNodeSize(entity, relationCount) {
+    const tier = normalizeTier(entity?.tier)
+    const tierBase = {
+        '核心': 8.4,
+        '重要': 6.8,
+        '次要': 5.2,
+        '装饰': 4.2,
+        'S': 8.4,
+        'A': 6.8,
+        'B': 5.2,
+        'C': 4.2,
+    }[tier] || 4.8
+    const relationBoost = Math.min(2.4, Math.max(0, relationCount - 1) * 0.22)
+    const protagonistBoost = entity?.is_protagonist ? 1.1 : 0
+    return Number((tierBase + relationBoost + protagonistBoost).toFixed(2))
+}
+
+function getRelationVisual(type) {
+    const raw = String(type || '').trim()
+    if (!raw) return DEFAULT_RELATION_VISUAL
+    const matched = RELATION_VISUALS.find(item => item.matches.some(keyword => raw.includes(keyword)))
+    return matched || DEFAULT_RELATION_VISUAL
+}
+
 const FULL_DATA_GROUPS = [
     { key: 'entities', title: '实体', columns: ['id', 'canonical_name', 'type', 'tier', 'first_appearance', 'last_appearance'], domain: 'core' },
     { key: 'chapters', title: '章节', columns: ['chapter', 'title', 'word_count', 'location', 'characters'], domain: 'core' },
@@ -109,6 +283,24 @@ const FULL_DATA_DOMAINS = [
     { id: 'ops', label: 'RAG 与工具' },
 ]
 
+const WORKFLOW_STAGE_ORDER = ['context_agent', 'draft', 'style_adapter', 'polish', 'data_agent']
+const CHECKER_ORDER = [
+    'high-point-checker',
+    'consistency-checker',
+    'pacing-checker',
+    'ooc-checker',
+    'continuity-checker',
+    'reader-pull-checker',
+]
+const CHECKER_LABELS = {
+    'high-point-checker': 'High-point',
+    'consistency-checker': 'Consistency',
+    'pacing-checker': 'Pacing',
+    'ooc-checker': 'OOC',
+    'continuity-checker': 'Continuity',
+    'reader-pull-checker': 'Reader-pull',
+}
+
 
 // ====================================================================
 // 页面 1：数据总览
@@ -135,7 +327,10 @@ function DashboardPage({ data }) {
     // Strand 历史统计
     const history = strand.history || []
     const strandCounts = { quest: 0, fire: 0, constellation: 0 }
-    history.forEach(h => { if (strandCounts[h.strand] !== undefined) strandCounts[h.strand]++ })
+    history.forEach(h => {
+        const key = h?.strand || h?.dominant
+        if (strandCounts[key] !== undefined) strandCounts[key]++
+    })
     const total = history.length || 1
 
     return (
@@ -196,6 +391,8 @@ function DashboardPage({ data }) {
                     <span>🟣 Constellation {(strandCounts.constellation / total * 100).toFixed(0)}%</span>
                 </div>
             </div>
+
+            <WorkflowLivePanel />
 
             {/* 伏笔列表 */}
             {unresolvedForeshadow.length > 0 ? (
@@ -356,25 +553,30 @@ function GraphPage() {
             fetchJSON('/api/entities'),
         ]).then(([rels, ents]) => {
             setRelationships(rels)
-            const typeColors = {
-                '角色': '#4f8ff7', '地点': '#34d399', '星球': '#22d3ee', '神仙': '#f59e0b',
-                '势力': '#8b5cf6', '招式': '#ef4444', '法宝': '#ec4899'
-            }
             const relatedIds = new Set()
             rels.forEach(r => { relatedIds.add(r.from_entity); relatedIds.add(r.to_entity) })
             const entityMap = {}
             ents.forEach(e => { entityMap[e.id] = e })
+            const degreeMap = {}
+            rels.forEach(r => {
+                degreeMap[r.from_entity] = (degreeMap[r.from_entity] || 0) + 1
+                degreeMap[r.to_entity] = (degreeMap[r.to_entity] || 0) + 1
+            })
 
             const nodes = [...relatedIds].map(id => ({
                 id,
                 name: entityMap[id]?.canonical_name || id,
-                val: (entityMap[id]?.tier === 'S' ? 8 : entityMap[id]?.tier === 'A' ? 5 : 2),
-                color: typeColors[entityMap[id]?.type] || '#5c6078'
+                type: entityMap[id]?.type || '未分类',
+                tier: normalizeTier(entityMap[id]?.tier),
+                relationCount: degreeMap[id] || 0,
+                val: computeNodeSize(entityMap[id], degreeMap[id] || 0),
+                color: ENTITY_TYPE_COLORS[entityMap[id]?.type] || '#5c6078',
             }))
             const links = rels.map(r => ({
                 source: r.from_entity,
                 target: r.to_entity,
-                name: r.type
+                name: r.type,
+                visual: getRelationVisual(r.type),
             }))
             setGraphData({ nodes, links })
         }).catch(() => { })
@@ -384,19 +586,56 @@ function GraphPage() {
         <>
             <div className="page-header">
                 <h2>🕸️ 关系图谱</h2>
-                <span className="card-badge badge-blue">{relationships.length} 条引力链接</span>
+                <span className="card-badge badge-blue">{graphData.nodes.length} 个节点</span>
+                <span className="card-badge badge-green">{relationships.length} 条关系</span>
+            </div>
+            <div className="graph-summary-grid">
+                <div className="card graph-summary-card">
+                    <div className="card-title">连线颜色语义</div>
+                    <div className="graph-legend-row">
+                        {RELATION_VISUALS.map(item => (
+                            <span key={item.label} className="graph-legend-pill">
+                                <span className="graph-legend-line" style={{ background: item.color }} />
+                                {item.label}
+                            </span>
+                        ))}
+                        <span className="graph-legend-pill">
+                            <span className="graph-legend-line" style={{ background: DEFAULT_RELATION_VISUAL.color }} />
+                            {DEFAULT_RELATION_VISUAL.label}
+                        </span>
+                    </div>
+                </div>
+                <div className="card graph-summary-card">
+                    <div className="card-title">球体大小说明</div>
+                    <div className="graph-legend-row">
+                        {NODE_SIZE_LEGEND.map(item => (
+                            <span key={item.tier} className="graph-legend-pill">
+                                <span className={`graph-size-dot ${item.sizeClass}`} />
+                                {item.tier}
+                            </span>
+                        ))}
+                    </div>
+                    <p className="graph-note">大小按“设定层级 + 关系密度”计算。主角会额外放大一级。</p>
+                </div>
+                <div className="card graph-summary-card">
+                    <div className="card-title">显示规则</div>
+                    <p className="graph-note">当前关系图谱只显示已建立关系边的实体；数据库里已有但尚未建立关系的实体，会在“设定词典”里显示。</p>
+                </div>
             </div>
             <div className="card graph-shell">
                 <ForceGraph3D
                     graphData={graphData}
-                    nodeLabel="name"
+                    nodeLabel={node => `${node.name}\n类型：${node.type}\n层级：${node.tier}\n关系数：${node.relationCount || 0}`}
+                    nodeThreeObject={buildGraphNodeObject}
                     nodeColor="color"
-                    nodeRelSize={6}
-                    linkColor={() => 'rgba(127, 90, 240, 0.35)'}
-                    linkWidth={1}
+                    nodeRelSize={5.6}
+                    linkLabel={link => String(link.name || '')}
+                    linkColor={link => link.visual?.color || DEFAULT_RELATION_VISUAL.color}
+                    linkWidth={link => link.visual?.width || DEFAULT_RELATION_VISUAL.width}
                     linkDirectionalParticles={2}
                     linkDirectionalParticleWidth={1.5}
-                    linkDirectionalParticleSpeed={d => 0.005 + Math.random() * 0.005}
+                    linkDirectionalParticleColor={link => link.visual?.color || DEFAULT_RELATION_VISUAL.color}
+                    linkDirectionalParticleSpeed={() => 0.008}
                     backgroundColor="#fffaf0"
                     showNavInfo={false}
                 />
@@ -554,6 +793,7 @@ function ReadingPowerPage() {
     )
 }
 
+
 function findFirstFilePath(tree) {
     const roots = Object.values(tree || {})
     for (const items of roots) {
@@ -579,6 +819,215 @@ function walkFirstFile(items) {
 // ====================================================================
 // 数据总览内嵌：全量数据视图
 // ====================================================================
+
+function WorkflowLivePanel() {
+    const [data, setData] = useState(null)
+    const [loading, setLoading] = useState(true)
+    const [selectedStage, setSelectedStage] = useState('')
+    const [selectedStream, setSelectedStream] = useState('stdout')
+    const [logContent, setLogContent] = useState('')
+
+    useEffect(() => {
+        let disposed = false
+        fetchJSON('/api/workflow/live', { event_limit: 60, log_lines: 28 })
+            .then(payload => {
+                if (disposed) return
+                setData(payload)
+                const availableStages = Object.keys(payload?.stage_logs || {})
+                const nextStage = payload?.active_stage || availableStages[0] || ''
+                setSelectedStage(prev => (prev && availableStages.includes(prev)) ? prev : nextStage)
+                setLoading(false)
+            })
+            .catch(() => {
+                if (!disposed) {
+                    setData(null)
+                    setLoading(false)
+                }
+            })
+        return () => { disposed = true }
+    }, [])
+
+    useEffect(() => {
+        if (!data || !selectedStage) {
+            setLogContent('')
+            return
+        }
+        let disposed = false
+        fetchJSON('/api/workflow/stage-log', {
+            chapter: data.chapter,
+            stage: selectedStage,
+            stream: selectedStream,
+        })
+            .then(payload => {
+                if (!disposed) setLogContent(payload?.content || '')
+            })
+            .catch(() => {
+                if (!disposed) {
+                    const fallback = data?.stage_logs?.[selectedStage]?.[`${selectedStream}_excerpt`] || ''
+                    setLogContent(fallback)
+                }
+            })
+        return () => { disposed = true }
+    }, [data, selectedStage, selectedStream])
+
+    if (loading) {
+        return (
+            <div className="card dashboard-section-card">
+                <div className="loading">加载 workflow 状态中…</div>
+            </div>
+        )
+    }
+
+    if (!data) return null
+
+    const currentTask = data.current_task || {}
+    const currentStep = currentTask.current_step || {}
+    const stageLogs = data.stage_logs || {}
+    const stages = WORKFLOW_STAGE_ORDER.filter(stage => stageLogs[stage])
+    const activeStage = data.active_stage || stages[0] || ''
+    const reviewInitial = data.review?.initial || {}
+    const reviewFinal = data.review?.final || {}
+    const selectedLog = stageLogs[selectedStage] || stageLogs[activeStage] || null
+    const events = (data.recent_events || []).slice(0, 14)
+    const checkerIds = CHECKER_ORDER.filter(id => {
+        return reviewInitial?.checkers?.[id] || reviewFinal?.checkers?.[id]
+            || (reviewInitial?.selected_checkers || []).includes(id)
+            || (reviewFinal?.selected_checkers || []).includes(id)
+    })
+
+    return (
+        <>
+            <div className="card dashboard-section-card">
+                <div className="card-header">
+                    <span className="card-title">当前流程</span>
+                    <span className={`card-badge ${currentTask?.status === 'running' ? 'badge-green' : 'badge-cyan'}`}>
+                        {currentTask?.status || 'idle'}
+                    </span>
+                </div>
+
+                <div className="workflow-summary-grid">
+                    <div className="workflow-stat-tile">
+                        <span className="workflow-stat-label">活动章节</span>
+                        <span className="workflow-stat-value">{data.chapter ? `第 ${data.chapter} 章` : '—'}</span>
+                        <span className="stat-sub">{data.artifact_dir || '暂无 artifact dir'}</span>
+                    </div>
+                    <div className="workflow-stat-tile">
+                        <span className="workflow-stat-label">当前步骤</span>
+                        <span className="workflow-stat-value plain">{currentStep?.id || '—'}</span>
+                        <span className="stat-sub">{currentStep?.name || '无活动步骤'}</span>
+                    </div>
+                    <div className="workflow-stat-tile">
+                        <span className="workflow-stat-label">进度备注</span>
+                        <span className="workflow-stat-value plain small">{currentStep?.progress_note || '—'}</span>
+                        <span className="stat-sub">retry {currentTask?.retry_count || 0}</span>
+                    </div>
+                    <div className="workflow-stat-tile">
+                        <span className="workflow-stat-label">审查得分</span>
+                        <span className="workflow-stat-value plain">{reviewFinal?.overall_score || reviewInitial?.overall_score || '—'}</span>
+                        <span className="stat-sub">初审 {reviewInitial?.overall_score || '—'} / 复审 {reviewFinal?.overall_score || '—'}</span>
+                    </div>
+                </div>
+
+                <div className="split-layout workflow-live-layout">
+                    <div className="split-main">
+                        <div className="card-header workflow-subheader">
+                            <span className="card-title">最近事件</span>
+                            <span className="card-badge badge-purple">{events.length} 条</span>
+                        </div>
+                        {events.length === 0 ? (
+                            <div className="empty-state compact"><p>暂无 workflow 事件</p></div>
+                        ) : (
+                            <div className="workflow-timeline">
+                                {events.map((item, idx) => (
+                                    <div className="workflow-event" key={`${item.timestamp || 'ts'}-${idx}`}>
+                                        <div className="workflow-event-time">{formatTs(item.timestamp)}</div>
+                                        <div className="workflow-event-body">
+                                            <div className="workflow-event-title">{item.title || item.source}</div>
+                                            <div className="workflow-event-message">{item.message || '—'}</div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="split-side">
+                        <div className="card-header workflow-subheader">
+                            <span className="card-title">阶段日志</span>
+                            <span className={`card-badge ${activeStage === selectedStage ? 'badge-green' : 'badge-amber'}`}>
+                                {selectedLog?.label || '未选择'}
+                            </span>
+                        </div>
+                        <div className="workflow-stage-tabs">
+                            {stages.map(stage => (
+                                <button
+                                    key={stage}
+                                    className={`filter-btn ${selectedStage === stage ? 'active' : ''}`}
+                                    onClick={() => setSelectedStage(stage)}
+                                >
+                                    {stageLogs[stage]?.label || stage}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="workflow-stream-tabs">
+                            <button className={`filter-btn ${selectedStream === 'stdout' ? 'active' : ''}`} onClick={() => setSelectedStream('stdout')}>stdout</button>
+                            <button className={`filter-btn ${selectedStream === 'stderr' ? 'active' : ''}`} onClick={() => setSelectedStream('stderr')}>stderr</button>
+                        </div>
+                        {selectedLog?.result_summary ? (
+                            <div className="workflow-stage-meta">
+                                {Object.entries(selectedLog.result_summary)
+                                    .filter(([, value]) => value !== null && value !== undefined && value !== '' && (!(Array.isArray(value)) || value.length > 0))
+                                    .slice(0, 4)
+                                    .map(([key, value]) => (
+                                        <span className="workflow-meta-chip" key={key}>{key}: {formatCompactValue(value)}</span>
+                                    ))}
+                            </div>
+                        ) : null}
+                        <pre className="workflow-log-pane">{logContent || '暂无日志'}</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div className="card dashboard-section-card">
+                <div className="card-header">
+                    <span className="card-title">6 Checker 初审 / 复审</span>
+                    <span className="card-badge badge-blue">{checkerIds.length || 0} / 6</span>
+                </div>
+                {checkerIds.length === 0 ? (
+                    <div className="empty-state compact"><p>当前章节还没有审查快照</p></div>
+                ) : (
+                    <div className="table-wrap">
+                        <table className="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Checker</th>
+                                    <th>初审</th>
+                                    <th>复审</th>
+                                    <th>摘要</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {checkerIds.map(id => {
+                                    const initialRow = reviewInitial?.checkers?.[id] || null
+                                    const finalRow = reviewFinal?.checkers?.[id] || null
+                                    return (
+                                        <tr key={id}>
+                                            <td className="chapter-no">{CHECKER_LABELS[id] || id}</td>
+                                            <td>{renderCheckerScore(initialRow)}</td>
+                                            <td>{renderCheckerScore(finalRow)}</td>
+                                            <td style={{ maxWidth: 520 }}>{finalRow?.summary || initialRow?.summary || '—'}</td>
+                                        </tr>
+                                    )
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+        </>
+    )
+}
+
 
 function MergedDataView() {
     const [loading, setLoading] = useState(true)
@@ -864,6 +1313,35 @@ function TreeNodes({ items, selected, onSelect, depth = 0 }) {
 function formatNumber(n) {
     if (n >= 10000) return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(n / 10000) + ' 万'
     return new Intl.NumberFormat('zh-CN').format(n)
+}
+
+function renderCheckerScore(row) {
+    if (!row) return '—'
+    return `${row.score ?? '—'} / ${row.pass ? 'PASS' : 'FAIL'}`
+}
+
+function formatTs(value) {
+    if (!value) return '—'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return String(value)
+    return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    })
+}
+
+function formatCompactValue(value) {
+    if (Array.isArray(value)) {
+        return value.length <= 2 ? value.join(' / ') : `${value.slice(0, 2).join(' / ')} ...`
+    }
+    if (typeof value === 'object' && value !== null) {
+        return formatCell(value)
+    }
+    return String(value)
 }
 
 function formatJSON(str) {

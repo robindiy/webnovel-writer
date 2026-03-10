@@ -2,9 +2,20 @@
 set -euo pipefail
 
 HELPER_PATH="__HELPER_PATH__"
+DEFAULT_PYTHON_EXEC="__PYTHON_EXEC__"
+
+if [[ -z "${LC_CTYPE:-}" || "${LC_CTYPE}" == "C" || "${LC_CTYPE}" == "POSIX" ]]; then
+  export LC_CTYPE="en_US.UTF-8"
+fi
+
+if [[ -z "${LANG:-}" || "${LANG}" == "C" || "${LANG}" == "POSIX" ]]; then
+  export LANG="en_US.UTF-8"
+fi
 
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   PYTHON_EXEC="$PYTHON_BIN"
+elif [[ -n "${DEFAULT_PYTHON_EXEC:-}" && -x "${DEFAULT_PYTHON_EXEC}" ]]; then
+  PYTHON_EXEC="$DEFAULT_PYTHON_EXEC"
 elif command -v python3 >/dev/null 2>&1; then
   PYTHON_EXEC="python3"
 elif command -v python >/dev/null 2>&1; then

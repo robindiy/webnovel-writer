@@ -348,7 +348,7 @@ class StatusReporter:
             return
 
         # 支持两种目录结构：
-        # 1) 正文/第0001章.md
+        # 1) 正文/第1卷/第001章.md
         # 2) 正文/第1卷/第001章-标题.md
         chapter_files = sorted(self.chapters_dir.rglob("第*.md"))
 

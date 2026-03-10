@@ -9,9 +9,11 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +21,7 @@ SKILL_SOURCE_ROOT = REPO_ROOT / "codex-skills" / "webnovel-writer"
 WRAPPER_TEMPLATE = REPO_ROOT / "scripts" / "webnovel-codex"
 RESTORE_SCRIPT = REPO_ROOT / "scripts" / "restore_codex_support.py"
 SUPPORT_ROOT_NAME = "webnovel-writer"
+RUNTIME_REQUIREMENTS = REPO_ROOT / "webnovel-writer" / "scripts" / "requirements-runtime.txt"
 
 
 def _default_codex_home() -> Path:
@@ -72,10 +75,30 @@ def _write_install_state(codex_home: Path, payload: dict) -> Path:
     return path
 
 
-def _install_wrapper(wrapper_target: Path, helper_path: Path) -> Path:
+def _resolved_python_executable(explicit_python: Optional[Union[str, Path]] = None) -> str:
+    candidate = str(explicit_python or getattr(sys, "executable", "") or "python3").strip()
+    return str(Path(candidate).expanduser().resolve()) if candidate else "python3"
+
+
+def _install_runtime_dependencies(python_executable: str) -> None:
+    subprocess.run(
+        [
+            python_executable,
+            "-m",
+            "pip",
+            "install",
+            "-r",
+            str(RUNTIME_REQUIREMENTS),
+        ],
+        check=True,
+        cwd=str(REPO_ROOT),
+    )
+
+
+def _install_wrapper(wrapper_target: Path, helper_path: Path, python_executable: str) -> Path:
     wrapper_target.parent.mkdir(parents=True, exist_ok=True)
     template = WRAPPER_TEMPLATE.read_text(encoding="utf-8")
-    rendered = template.replace("__HELPER_PATH__", str(helper_path))
+    rendered = template.replace("__HELPER_PATH__", str(helper_path)).replace("__PYTHON_EXEC__", python_executable)
     wrapper_target.write_text(rendered, encoding="utf-8")
     wrapper_target.chmod(wrapper_target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return wrapper_target
@@ -85,9 +108,12 @@ def install_codex_support(
     *,
     codex_home: Optional[Union[str, Path]] = None,
     repo_root: Optional[Union[str, Path]] = None,
+    python_executable: Optional[Union[str, Path]] = None,
+    install_deps: bool = False,
 ) -> dict[str, str]:
     resolved_codex_home = Path(codex_home).expanduser().resolve() if codex_home else _default_codex_home()
     resolved_repo_root = Path(repo_root).expanduser().resolve() if repo_root else REPO_ROOT
+    resolved_python = _resolved_python_executable(python_executable)
 
     skill_target = resolved_codex_home / "skills" / SUPPORT_ROOT_NAME
     wrapper_target = resolved_codex_home / "bin" / "webnovel-codex"
@@ -113,14 +139,19 @@ def install_codex_support(
         shutil.rmtree(skill_target)
     shutil.copytree(SKILL_SOURCE_ROOT, skill_target)
 
+    if install_deps:
+        _install_runtime_dependencies(resolved_python)
+
     repo_config = _write_repo_config(skill_target, resolved_repo_root)
-    wrapper_path = _install_wrapper(wrapper_target, skill_target / "scripts" / "run_webnovel_command.py")
-    restore_wrapper_path = _install_wrapper(restore_wrapper_target, RESTORE_SCRIPT)
+    wrapper_path = _install_wrapper(wrapper_target, skill_target / "scripts" / "run_webnovel_command.py", resolved_python)
+    restore_wrapper_path = _install_wrapper(restore_wrapper_target, RESTORE_SCRIPT, resolved_python)
     install_state = _write_install_state(
         resolved_codex_home,
         {
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "repo_root": str(resolved_repo_root),
+            "python_executable": resolved_python,
+            "runtime_requirements": str(RUNTIME_REQUIREMENTS),
             "backup_dir": str(backup_dir),
             "targets": {
                 "skill_root": str(skill_target),
@@ -138,16 +169,25 @@ def install_codex_support(
         "wrapper_path": str(wrapper_path),
         "restore_wrapper_path": str(restore_wrapper_path),
         "install_state": str(install_state),
+        "python_executable": resolved_python,
+        "runtime_requirements": str(RUNTIME_REQUIREMENTS),
     }
 
 
-def main() -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Install Codex support for webnovel-writer")
     parser.add_argument("--codex-home", default=None, help="Codex home directory (default: $CODEX_HOME or ~/.codex)")
     parser.add_argument("--repo-root", default=None, help="Repository root (default: current repo)")
-    args = parser.parse_args()
+    parser.add_argument("--python-executable", default=None, help="Python interpreter to pin into wrapper and use for runtime deps")
+    parser.add_argument("--skip-deps", action="store_true", help="Skip installing runtime dependencies into the selected Python")
+    args = parser.parse_args(argv)
 
-    result = install_codex_support(codex_home=args.codex_home, repo_root=args.repo_root)
+    result = install_codex_support(
+        codex_home=args.codex_home,
+        repo_root=args.repo_root,
+        python_executable=args.python_executable,
+        install_deps=not args.skip_deps,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

@@ -566,3 +566,78 @@ def test_save_state_timeout(monkeypatch, temp_project):
     monkeypatch.setattr(sm.filelock, "FileLock", FakeLock)
     with pytest.raises(RuntimeError):
         manager.save_state()
+
+
+def test_process_chapter_result_replay_dedupes_foreshadowing(temp_project):
+    payload = {
+        "entities_appeared": [],
+        "entities_new": [],
+        "state_changes": [],
+        "relationships_new": [],
+        "foreshadowing_notes": ["[新增] 神秘黑手第一次露面"],
+    }
+
+    manager = StateManager(temp_project, enable_sqlite_sync=False)
+    manager.process_chapter_result(12, payload)
+    manager.save_state()
+
+    manager_replay = StateManager(temp_project, enable_sqlite_sync=False)
+    manager_replay.process_chapter_result(12, payload)
+    manager_replay.save_state()
+
+    saved = json.loads(temp_project.state_file.read_text(encoding="utf-8"))
+    foreshadowing = saved.get("plot_threads", {}).get("foreshadowing", [])
+    assert len(foreshadowing) == 1
+    assert foreshadowing[0]["content"] == "神秘黑手第一次露面"
+
+
+def test_process_chapter_result_structured_foreshadowing_updates_meta_and_status(temp_project):
+    payload = {
+        "entities_appeared": [],
+        "entities_new": [],
+        "state_changes": [],
+        "relationships_new": [],
+        "foreshadowing_notes": [],
+        "foreshadowing_planted": [
+            {
+                "id": "fs_core_shadow",
+                "content": "赵国威真正盯上的不是张浩，而是井货入口",
+                "tier": "核心",
+                "expected_payoff": "中期",
+            }
+        ],
+        "foreshadowing_continued": [],
+        "foreshadowing_resolved": [],
+        "chapter_meta": {"title": "测试章"},
+    }
+
+    manager = StateManager(temp_project, enable_sqlite_sync=False)
+    manager.process_chapter_result(15, payload)
+    manager.save_state()
+
+    saved = json.loads(temp_project.state_file.read_text(encoding="utf-8"))
+    chapter_meta = saved.get("chapter_meta", {}).get("0015", {})
+    assert chapter_meta.get("foreshadowing_planted") == ["赵国威真正盯上的不是张浩，而是井货入口"]
+
+    foreshadowing = saved.get("plot_threads", {}).get("foreshadowing", [])
+    assert any(item.get("id") == "fs_core_shadow" and item.get("status") in {"未回收", "active", "open", "pending"} for item in foreshadowing)
+
+    replay = StateManager(temp_project, enable_sqlite_sync=False)
+    replay.process_chapter_result(16, {
+        "entities_appeared": [],
+        "entities_new": [],
+        "state_changes": [],
+        "relationships_new": [],
+        "foreshadowing_notes": [],
+        "foreshadowing_planted": [],
+        "foreshadowing_continued": [],
+        "foreshadowing_resolved": [{"id": "fs_core_shadow", "content": "赵国威真正盯上的不是张浩，而是井货入口"}],
+        "chapter_meta": {"title": "回收章"},
+    })
+    replay.save_state()
+
+    saved2 = json.loads(temp_project.state_file.read_text(encoding="utf-8"))
+    chapter_meta2 = saved2.get("chapter_meta", {}).get("0016", {})
+    assert chapter_meta2.get("foreshadowing_resolved") == ["赵国威真正盯上的不是张浩，而是井货入口"]
+    foreshadowing2 = saved2.get("plot_threads", {}).get("foreshadowing", [])
+    assert any(item.get("id") == "fs_core_shadow" and item.get("status") in {"已回收", "resolved", "closed"} for item in foreshadowing2)

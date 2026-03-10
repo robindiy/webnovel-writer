@@ -668,12 +668,12 @@ def init_project(
                 "# Embedding",
                 "EMBED_BASE_URL=https://api-inference.modelscope.cn/v1",
                 "EMBED_MODEL=Qwen/Qwen3-Embedding-8B",
-                "EMBED_API_KEY=",
+                "EMBED_API_KEY=your_embed_api_key",
                 "",
                 "# Rerank",
                 "RERANK_BASE_URL=https://api.jina.ai/v1",
                 "RERANK_MODEL=jina-reranker-v3",
-                "RERANK_API_KEY=",
+                "RERANK_API_KEY=your_rerank_api_key",
                 "",
             ]
         )

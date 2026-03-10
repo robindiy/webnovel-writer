@@ -19,7 +19,7 @@ def _load_module():
 
 def test_workflow_lifecycle_and_trace(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -44,9 +44,31 @@ def test_workflow_lifecycle_and_trace(tmp_path, monkeypatch):
     assert "task_completed" in events
 
 
+def test_update_step_records_progress_history(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
+
+    webnovel_dir = tmp_path / ".webnovel"
+    webnovel_dir.mkdir(parents=True, exist_ok=True)
+
+    module.start_task("webnovel-write", {"chapter_num": 13})
+    module.start_step("Step 4", "Polish")
+    module.update_step("Step 4", "Pass B 全文重读", "anti-ai sweep")
+
+    state = module.load_state()
+    current_step = state["current_task"]["current_step"]
+    assert current_step["progress_note"] == "Pass B 全文重读"
+    assert current_step["status_detail"] == "anti-ai sweep"
+    assert current_step["progress_history"][-1]["progress_note"] == "Pass B 全文重读"
+
+    trace_path = module.get_call_trace_path()
+    events = [json.loads(line)["event"] for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert "step_progress" in events
+
+
 def test_start_task_reentry_increments_retry(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +85,7 @@ def test_start_task_reentry_increments_retry(tmp_path, monkeypatch):
 
 def test_complete_step_rejects_mismatch_step_id(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +103,7 @@ def test_complete_step_rejects_mismatch_step_id(tmp_path, monkeypatch):
 
 def test_workflow_step_owner_and_order_violation_trace(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -120,7 +142,7 @@ def test_safe_append_call_trace_logs_failure(monkeypatch, caplog):
 
 def test_workflow_reentry_does_not_duplicate_history(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -139,7 +161,7 @@ def test_workflow_reentry_does_not_duplicate_history(tmp_path, monkeypatch):
 
 def test_cleanup_artifacts_requires_confirm(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -163,9 +185,17 @@ def test_cleanup_artifacts_requires_confirm(tmp_path, monkeypatch):
     assert any(item.startswith("[预览]") for item in preview)
 
 
+def test_default_chapter_draft_path_uses_volume_layout():
+    module = _load_module()
+
+    draft_path = module.default_chapter_draft_path(Path("/tmp/project"), 7)
+
+    assert str(draft_path).endswith("正文/第1卷/第007章.md")
+
+
 def test_cleanup_artifacts_confirm_deletes_with_backup(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *_args, **_kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)

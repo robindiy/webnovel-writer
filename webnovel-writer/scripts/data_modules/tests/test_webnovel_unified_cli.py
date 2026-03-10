@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,6 +91,67 @@ def test_extract_context_forwards_with_resolved_project_root(monkeypatch, tmp_pa
         "--format",
         "json",
     ]
+
+
+def test_sync_chapter_data_forwards_with_resolved_project_root(monkeypatch, tmp_path):
+    module = _load_webnovel_module()
+
+    book_root = (tmp_path / "book").resolve()
+    called = {}
+
+    def _fake_resolve(explicit_project_root=None):
+        return book_root
+
+    def _fake_run_script(script_name, argv):
+        called["script_name"] = script_name
+        called["argv"] = list(argv)
+        return 0
+
+    monkeypatch.setattr(module, "_resolve_root", _fake_resolve)
+    monkeypatch.setattr(module, "_run_script", _fake_run_script)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "--project-root",
+            str(tmp_path),
+            "sync-chapter-data",
+            "--chapter",
+            "6",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    assert int(exc.value.code or 0) == 0
+    assert called["script_name"] == "sync_chapter_data.py"
+    assert called["argv"] == [
+        "--project-root",
+        str(book_root),
+        "--chapter",
+        "6",
+    ]
+
+
+def test_webnovel_cli_runs_as_direct_script(tmp_path):
+    repo_root = Path(__file__).resolve().parents[4]
+    script_path = repo_root / "webnovel-writer" / "scripts" / "data_modules" / "webnovel.py"
+
+    book_root = (tmp_path / "book").resolve()
+    (book_root / ".webnovel").mkdir(parents=True, exist_ok=True)
+    (book_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, str(script_path), "--project-root", str(book_root), "where"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(book_root)
 
 
 def test_quality_trend_report_writes_to_book_root_when_input_is_workspace_root(tmp_path, monkeypatch):

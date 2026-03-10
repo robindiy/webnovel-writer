@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from datetime import datetime
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +39,314 @@ def _get_project_root() -> Path:
 
 def _webnovel_dir() -> Path:
     return _get_project_root() / ".webnovel"
+
+
+def _read_json_file(path: Path, default: Any = None) -> Any:
+    if not path.is_file():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _read_jsonl_tail(path: Path, limit: int = 100) -> list[dict]:
+    if not path.is_file():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows[-limit:]
+
+
+def _parse_timestamp(value: Any) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    raw = raw.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _tail_text(path: Path, *, max_lines: int = 40, max_chars: int = 6000) -> str:
+    if not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    tail = "\n".join(lines[-max_lines:])
+    if len(tail) <= max_chars:
+        return tail
+    return tail[-max_chars:]
+
+
+def _relative_project_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(_get_project_root())).replace("\\", "/")
+    except Exception:
+        return str(path)
+
+
+WORKFLOW_STAGE_LABELS = {
+    "context_agent": "Step 1 · Context Agent",
+    "draft": "Step 2A · 正文起草",
+    "style_adapter": "Step 2B · 风格适配",
+    "polish": "Step 4 · 润色",
+    "data_agent": "Step 5 · Data Agent",
+}
+
+STEP_TO_STAGE = {
+    "Step 1": "context_agent",
+    "Step 2A": "draft",
+    "Step 2B": "style_adapter",
+    "Step 4": "polish",
+    "Step 5": "data_agent",
+}
+
+
+def _result_path(artifact_dir: Path, stage: str) -> Path | None:
+    for candidate in (artifact_dir / f"{stage}.result.json", artifact_dir / f"{stage}.json"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _stage_log_info(artifact_dir: Path, stage: str, *, log_lines: int = 40) -> dict | None:
+    stdout_path = artifact_dir / f"{stage}.stdout.log"
+    stderr_path = artifact_dir / f"{stage}.stderr.log"
+    result_path = _result_path(artifact_dir, stage)
+    trace_path = artifact_dir / f"{stage}.trace.json"
+    execution_path = artifact_dir / f"{stage}.execution.json"
+    if not stdout_path.is_file() and not stderr_path.is_file() and result_path is None and not trace_path.is_file() and not execution_path.is_file():
+        return None
+
+    result_payload = _read_json_file(result_path, {}) if result_path else {}
+    trace_payload = _read_json_file(trace_path, {}) if trace_path.is_file() else {}
+    execution_payload = _read_json_file(execution_path, {}) if execution_path.is_file() else {}
+    trace_summary = execution_payload.get("trace_summary") if isinstance(execution_payload.get("trace_summary"), dict) else {}
+    if not trace_summary and isinstance(trace_payload.get("summary"), dict):
+        trace_summary = trace_payload.get("summary") or {}
+
+    summary: dict[str, Any] = {}
+    if stage == "context_agent":
+        brief = result_payload.get("task_brief") if isinstance(result_payload.get("task_brief"), dict) else {}
+        summary = {
+            "chapter": result_payload.get("chapter"),
+            "core_task": brief.get("core_task"),
+        }
+    elif stage == "draft":
+        content = str(result_payload.get("content") or "")
+        summary = {
+            "title": result_payload.get("title") or execution_payload.get("title"),
+            "file_changed": execution_payload.get("file_changed"),
+            "workspace_writes": trace_summary.get("workspace_writes"),
+            "tools_seen": trace_summary.get("tools_seen") or [],
+            "chars": len(content),
+            "workspace_reads": trace_summary.get("workspace_reads"),
+            "events_captured": trace_summary.get("events_captured"),
+        }
+    elif stage in {"style_adapter", "polish"}:
+        summary = {
+            "file_changed": execution_payload.get("file_changed"),
+            "workspace_writes": trace_summary.get("workspace_writes"),
+            "workspace_reads": trace_summary.get("workspace_reads"),
+            "tools_seen": trace_summary.get("tools_seen") or [],
+            "pass_count": len(result_payload.get("pass_reports") or []),
+            "full_reread_count": result_payload.get("full_reread_count", 0),
+            "change_summary": result_payload.get("change_summary") or [],
+            "anti_ai_force_check": result_payload.get("anti_ai_force_check"),
+        }
+    elif stage == "data_agent":
+        summary = {
+            "summary_text": result_payload.get("summary_text"),
+            "foreshadowing_count": len(result_payload.get("foreshadowing_notes") or []),
+            "scene_count": len(result_payload.get("scenes") or []),
+        }
+
+    candidates = [p for p in (stdout_path, stderr_path, result_path, trace_path, execution_path) if p and p.exists()]
+    updated_at = max((p.stat().st_mtime for p in candidates), default=0)
+    return {
+        "stage": stage,
+        "label": WORKFLOW_STAGE_LABELS.get(stage, stage),
+        "stdout_exists": stdout_path.is_file(),
+        "stderr_exists": stderr_path.is_file(),
+        "stdout_excerpt": _tail_text(stdout_path, max_lines=log_lines),
+        "stderr_excerpt": _tail_text(stderr_path, max_lines=min(20, log_lines)),
+        "stdout_path": _relative_project_path(stdout_path) if stdout_path.is_file() else None,
+        "stderr_path": _relative_project_path(stderr_path) if stderr_path.is_file() else None,
+        "result_path": _relative_project_path(result_path) if result_path else None,
+        "trace_path": _relative_project_path(trace_path) if trace_path.is_file() else None,
+        "execution_path": _relative_project_path(execution_path) if execution_path.is_file() else None,
+        "trace_summary": trace_summary,
+        "result_summary": summary,
+        "updated_at": updated_at,
+    }
+
+
+def _active_workflow_chapter(workflow_state: dict) -> int | None:
+    current_task = workflow_state.get("current_task") if isinstance(workflow_state, dict) else None
+    if isinstance(current_task, dict):
+        chapter = current_task.get("args", {}).get("chapter_num")
+        if isinstance(chapter, int) and chapter > 0:
+            return chapter
+    last_stable = workflow_state.get("last_stable_state") if isinstance(workflow_state, dict) else None
+    if isinstance(last_stable, dict):
+        chapter = last_stable.get("chapter") or last_stable.get("chapter_num")
+        if isinstance(chapter, int) and chapter > 0:
+            return chapter
+    return None
+
+
+def _active_stage_name(workflow_state: dict, stage_logs: dict[str, dict]) -> str | None:
+    current_task = workflow_state.get("current_task") if isinstance(workflow_state, dict) else None
+    current_step = current_task.get("current_step") if isinstance(current_task, dict) else None
+    if isinstance(current_step, dict):
+        step_id = str(current_step.get("id") or "")
+        if step_id in STEP_TO_STAGE:
+            return STEP_TO_STAGE[step_id]
+    if stage_logs:
+        latest = max(stage_logs.values(), key=lambda row: float(row.get("updated_at") or 0))
+        return str(latest.get("stage") or "") or None
+    return None
+
+
+def _load_review_snapshot(artifact_dir: Path, name: str) -> dict:
+    payload = _read_json_file(artifact_dir / name, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _format_call_trace_event(row: dict) -> dict:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    event = str(row.get("event") or "trace")
+    title = event
+    message = ""
+    if event == "task_started":
+        title = "任务启动"
+        message = f"{payload.get('command') or 'unknown'} · 第 {payload.get('args', {}).get('chapter_num') or '?'} 章"
+    elif event == "task_reentered":
+        title = "任务重入"
+        message = f"重试次数 {payload.get('retry_count') or 0}"
+    elif event == "step_started":
+        title = f"{payload.get('step_id') or 'Step'} 开始"
+        message = str(payload.get("step_name") or "")
+        if payload.get("progress_note"):
+            message = f"{message} · {payload.get('progress_note')}".strip(" ·")
+    elif event == "step_progress":
+        title = f"{payload.get('step_id') or 'Step'} 进度"
+        message = str(payload.get("progress_note") or payload.get("status_detail") or "")
+    elif event == "step_completed":
+        title = f"{payload.get('step_id') or 'Step'} 完成"
+        message = str(payload.get("command") or "")
+    elif event == "task_completed":
+        title = "任务完成"
+        message = f"第 {payload.get('chapter') or '?'} 章"
+    elif event == "step_order_violation":
+        title = "步骤顺序异常"
+        message = str(payload.get("step_id") or "")
+    return {
+        "timestamp": row.get("timestamp"),
+        "source": "call_trace",
+        "title": title,
+        "message": message,
+        "chapter": payload.get("chapter") or payload.get("args", {}).get("chapter_num"),
+    }
+
+
+def _format_write_event(row: dict) -> dict:
+    stage = str(row.get("stage") or "stage")
+    kind = str(row.get("kind") or "summary")
+    if kind == "event":
+        title = f"{WORKFLOW_STAGE_LABELS.get(stage, stage)} · {row.get('event') or 'event'}"
+        message = str(row.get("message") or "")
+    else:
+        title = f"{WORKFLOW_STAGE_LABELS.get(stage, stage)} {'完成' if row.get('success') else '失败'}"
+        elapsed = row.get("elapsed_ms")
+        message = f"elapsed={elapsed}ms" if elapsed else str((row.get("details") or {}).get("error") or "")
+    return {
+        "timestamp": row.get("timestamp"),
+        "source": "write_observability",
+        "title": title,
+        "message": message,
+        "chapter": (row.get("details") or {}).get("chapter"),
+    }
+
+
+def _format_review_event(row: dict) -> dict:
+    tool_name = str(row.get("tool_name") or "review")
+    checker = str(row.get("checker") or "").strip()
+    title = tool_name
+    message = ""
+    if checker:
+        title = f"{checker} {'通过' if row.get('success', True) else '失败'}"
+        if row.get("elapsed_ms"):
+            message = f"elapsed={row.get('elapsed_ms')}ms"
+        elif row.get("error"):
+            message = str(row.get("error") or "")
+    elif tool_name.endswith(":aggregate"):
+        title = "审查聚合"
+        message = f"score={row.get('overall_score')}"
+    elif tool_name.endswith(":plan"):
+        title = "审查计划"
+        message = ", ".join(row.get("selected_checkers") or [])
+    else:
+        message = str(row.get("error") or row.get("details") or "")
+    return {
+        "timestamp": row.get("timestamp"),
+        "source": "review_observability",
+        "title": title,
+        "message": message,
+        "chapter": row.get("chapter"),
+    }
+
+
+def _build_workflow_live_payload(*, event_limit: int = 80, log_lines: int = 40) -> dict:
+    webnovel = _webnovel_dir()
+    workflow_state = _read_json_file(webnovel / "workflow_state.json", {}) or {}
+    chapter = _active_workflow_chapter(workflow_state)
+    artifact_dir = webnovel / "write_workflow" / f"ch{chapter:04d}" if chapter else None
+
+    stage_logs: dict[str, dict] = {}
+    if artifact_dir and artifact_dir.is_dir():
+        for stage in WORKFLOW_STAGE_LABELS:
+            info = _stage_log_info(artifact_dir, stage, log_lines=log_lines)
+            if info:
+                stage_logs[stage] = info
+
+    recent_events = [
+        *(_format_call_trace_event(row) for row in _read_jsonl_tail(webnovel / "observability" / "call_trace.jsonl", limit=event_limit * 2)),
+        *(_format_write_event(row) for row in _read_jsonl_tail(webnovel / "observability" / "codex_write_workflow.jsonl", limit=event_limit * 2)),
+        *(_format_review_event(row) for row in _read_jsonl_tail(webnovel / "observability" / "review_agent_timing.jsonl", limit=event_limit * 2)),
+    ]
+    recent_events = sorted(recent_events, key=lambda row: _parse_timestamp(row.get("timestamp")), reverse=True)[:event_limit]
+
+    return {
+        "workflow_state": workflow_state,
+        "current_task": workflow_state.get("current_task"),
+        "last_stable_state": workflow_state.get("last_stable_state"),
+        "chapter": chapter,
+        "artifact_dir": _relative_project_path(artifact_dir) if artifact_dir and artifact_dir.exists() else None,
+        "active_stage": _active_stage_name(workflow_state, stage_logs),
+        "stage_logs": stage_logs,
+        "review": {
+            "initial": _load_review_snapshot(artifact_dir, "review_initial.json") if artifact_dir and artifact_dir.exists() else {},
+            "final": _load_review_snapshot(artifact_dir, "review_final.json") if artifact_dir and artifact_dir.exists() else {},
+        },
+        "recent_events": recent_events,
+        "sources": {
+            "call_trace": _relative_project_path(webnovel / "observability" / "call_trace.jsonl"),
+            "write_observability": _relative_project_path(webnovel / "observability" / "codex_write_workflow.jsonl"),
+            "review_observability": _relative_project_path(webnovel / "observability" / "review_agent_timing.jsonl"),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +645,51 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
                 "SELECT * FROM writing_checklist_scores ORDER BY chapter DESC LIMIT ?",
                 (limit,),
             )
+
+    @app.get("/api/workflow/state")
+    def workflow_state():
+        return _read_json_file(_webnovel_dir() / "workflow_state.json", {}) or {}
+
+    @app.get("/api/workflow/call-trace")
+    def workflow_call_trace(limit: int = 120):
+        return _read_jsonl_tail(_webnovel_dir() / "observability" / "call_trace.jsonl", limit=limit)
+
+    @app.get("/api/workflow/write-observability")
+    def workflow_write_observability(limit: int = 120):
+        return _read_jsonl_tail(_webnovel_dir() / "observability" / "codex_write_workflow.jsonl", limit=limit)
+
+    @app.get("/api/workflow/review-observability")
+    def workflow_review_observability(limit: int = 120):
+        return _read_jsonl_tail(_webnovel_dir() / "observability" / "review_agent_timing.jsonl", limit=limit)
+
+    @app.get("/api/workflow/live")
+    def workflow_live(event_limit: int = 80, log_lines: int = 40):
+        return _build_workflow_live_payload(event_limit=event_limit, log_lines=log_lines)
+
+    @app.get("/api/workflow/stage-log")
+    def workflow_stage_log(stage: str, stream: str = "stdout", chapter: Optional[int] = None):
+        if stream not in {"stdout", "stderr"}:
+            raise HTTPException(400, "stream 仅支持 stdout / stderr")
+        if stage not in WORKFLOW_STAGE_LABELS:
+            raise HTTPException(400, f"未知 stage: {stage}")
+
+        workflow_state = _read_json_file(_webnovel_dir() / "workflow_state.json", {}) or {}
+        target_chapter = chapter or _active_workflow_chapter(workflow_state)
+        if not target_chapter:
+            raise HTTPException(404, "未找到活动章节")
+
+        artifact_dir = _webnovel_dir() / "write_workflow" / f"ch{target_chapter:04d}"
+        log_path = artifact_dir / f"{stage}.{stream}.log"
+        if not log_path.is_file():
+            raise HTTPException(404, f"未找到 {stage}.{stream}.log")
+        return {
+            "chapter": target_chapter,
+            "stage": stage,
+            "label": WORKFLOW_STAGE_LABELS.get(stage, stage),
+            "stream": stream,
+            "path": _relative_project_path(log_path),
+            "content": log_path.read_text(encoding="utf-8"),
+        }
 
     # ===========================================================
     # API：文档浏览（正文/大纲/设定集 —— 只读）

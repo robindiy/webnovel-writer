@@ -61,6 +61,7 @@ class StubClientRerankFailure(StubClient):
 def temp_project(tmp_path, monkeypatch):
     cfg = DataModulesConfig.from_project_root(tmp_path)
     cfg.ensure_dirs()
+    (cfg.webnovel_dir / "state.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(rag_module, "get_client", lambda config: StubClient())
     return cfg
 
@@ -363,7 +364,7 @@ async def test_search_with_backtrack(temp_project):
             "chunk_type": "scene",
             "chunk_id": "ch0001_s1",
             "parent_chunk_id": "ch0001_summary",
-            "source_file": "正文/第0001章.md#scene_1",
+            "source_file": "正文/第1卷/第001章.md#scene_1",
         },
     ]
     await adapter.store_chunks(chunks)
@@ -386,11 +387,11 @@ def test_recent_and_fetch_vectors(temp_project):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO vectors (chunk_id, chapter, scene_index, content, embedding, parent_chunk_id, chunk_type, source_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("ch0001_s1", 1, 1, "内容", b"", None, "scene", "正文/第0001章.md#scene_1"),
+            ("ch0001_s1", 1, 1, "内容", b"", None, "scene", "正文/第1卷/第001章.md#scene_1"),
         )
         cursor.execute(
             "INSERT INTO vectors (chunk_id, chapter, scene_index, content, embedding, parent_chunk_id, chunk_type, source_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("ch0002_s1", 2, 1, "后文内容", b"", None, "scene", "正文/第0002章.md#scene_1"),
+            ("ch0002_s1", 2, 1, "后文内容", b"", None, "scene", "正文/第1卷/第002章.md#scene_1"),
         )
         conn.commit()
 
@@ -455,6 +456,7 @@ def test_rag_adapter_cli(temp_project, monkeypatch, capsys):
         rag_module.main()
 
     root = str(temp_project.project_root)
+    monkeypatch.setattr(rag_module, "resolve_project_root", lambda explicit_project_root=None: Path(str(explicit_project_root)).resolve(), raising=False)
     run_cli(["--project-root", root, "stats"])
 
     # index-chapter
@@ -465,10 +467,19 @@ def test_rag_adapter_cli(temp_project, monkeypatch, capsys):
             "index-chapter",
             "--chapter",
             "1",
+            "--chapter-file",
+            "正文/第1卷/第001章.md",
             "--scenes",
             json.dumps([{"index": 1, "summary": "摘要", "content": "内容"}], ensure_ascii=False),
         ]
     )
+    adapter = RAGAdapter(temp_project)
+    with adapter._get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT source_file FROM vectors WHERE chunk_id = ?", ("ch0001_s1",))
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "正文/第1卷/第001章.md#scene_1"
 
     # search
     run_cli(["--project-root", root, "search", "--query", "内容", "--mode", "bm25", "--top-k", "5"])
@@ -496,6 +507,7 @@ def test_rag_adapter_log_query_failure_is_reported(temp_project, monkeypatch, ca
 
 def test_rag_adapter_cli_search_shows_degraded_warning(temp_project, monkeypatch, capsys):
     monkeypatch.setattr(rag_module, "get_client", lambda config: StubClientAuthFailure())
+    monkeypatch.setattr(rag_module, "resolve_project_root", lambda explicit_project_root=None: Path(str(explicit_project_root)).resolve(), raising=False)
 
     def run_cli(args):
         monkeypatch.setattr(sys, "argv", ["rag_adapter"] + args)

@@ -59,6 +59,52 @@ def test_install_codex_support_records_backup_state(tmp_path):
     assert "restore_codex_support.py" in restore_wrapper.read_text(encoding="utf-8")
 
 
+def test_install_wrapper_bootstraps_utf8_locale(tmp_path):
+    module = _install_module()
+    codex_home = tmp_path / ".codex"
+
+    result = module.install_codex_support(codex_home=codex_home, repo_root=_repo_root())
+    wrapper_path = Path(result["wrapper_path"])
+    wrapper_text = wrapper_path.read_text(encoding="utf-8")
+
+    assert 'if [[ -z "${LC_CTYPE:-}" || "${LC_CTYPE}" == "C" || "${LC_CTYPE}" == "POSIX" ]]; then' in wrapper_text
+    assert 'export LC_CTYPE="en_US.UTF-8"' in wrapper_text
+    assert 'export LANG="en_US.UTF-8"' in wrapper_text
+
+
+def test_install_wrapper_pins_current_python_interpreter(tmp_path):
+    module = _install_module()
+    codex_home = tmp_path / ".codex"
+
+    result = module.install_codex_support(
+        codex_home=codex_home,
+        repo_root=_repo_root(),
+        python_executable="/tmp/fake-venv/bin/python3.12",
+    )
+    wrapper_text = Path(result["wrapper_path"]).read_text(encoding="utf-8")
+
+    assert f'DEFAULT_PYTHON_EXEC="{result["python_executable"]}"' in wrapper_text
+
+
+def test_main_installs_runtime_dependencies_by_default(monkeypatch, capsys, tmp_path):
+    module = _install_module()
+    calls = {}
+
+    monkeypatch.setattr(module, "_default_codex_home", lambda: tmp_path / ".codex")
+    monkeypatch.setattr(
+        module,
+        "_install_runtime_dependencies",
+        lambda python_executable: calls.setdefault("python_executable", python_executable),
+    )
+
+    exit_code = module.main([])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls["python_executable"]
+    assert '"runtime_requirements"' in captured.out
+
+
 def test_restore_codex_support_recovers_previous_install(tmp_path):
     install_module = _install_module()
     restore_module = _restore_module()

@@ -86,6 +86,7 @@ codex --version
 - `aiohttp`
 - `filelock`
 - `pydantic`
+- `prompt_toolkit`
 
 ### Dashboard
 
@@ -118,6 +119,12 @@ cd webnovel-writer
 ```bash
 python3 -m pip install -r requirements.txt
 ```
+
+说明：
+
+- `webnovel-init` 的 shell 初始化向导现在使用 `prompt_toolkit`
+- `webnovel-review` 的 Codex 分发现在会直接落到 source-backed 脚本 `codex_review_workflow.py`
+- 如果你之前已经装过一遍依赖，升级到新版本后请重新执行这条命令
 
 如果你的系统没有 `python3`，先确认 Python 是否已正确安装。
 
@@ -179,6 +186,8 @@ python3 scripts/install_codex_support.py
 - `~/.codex/bin/webnovel-codex`
 - `~/.codex/bin/webnovel-codex-restore`
 - `~/.codex/webnovel-writer/install_state.json`
+- 并自动把运行时依赖安装到当前执行安装脚本的 Python 里
+- 同时把 `webnovel-codex` 固定到这套 Python，避免 `python3` 随 shell 环境漂移
 
 其中：
 
@@ -196,13 +205,16 @@ python3 scripts/install_codex_support.py
 ~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-init" --mode codex --json
 ```
 
-如果这一步成功，输出里应至少包含下面这两个字段：
+如果这一步成功，输出里应至少包含下面这些字段：
 
 ```json
 {
   "status": "ok",
   "command": {
     "name": "webnovel-init"
+  },
+  "action": {
+    "type": "external_init"
   }
 }
 ```
@@ -220,7 +232,85 @@ cd "$HOME/Documents/webnovel-workspace"
 
 执行完后，你当前所在目录就是以后放小说项目的地方。
 
-## 7) 启动 Codex
+## 7) 在终端里启动初始化向导（推荐）
+
+继续在同一个终端窗口里执行：
+
+```bash
+~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-init" --mode shell
+```
+
+这一步会直接进入初始化向导。
+
+当前 shell 向导支持：
+
+- `↑/↓` 选择菜单，`Enter` / `Space` 直接确认
+- 长列表固定窗口滚动
+- 手动输入字段显示 source-backed 提示和示例
+- 书名若映射到已存在目录，会拦截并要求你换名
+
+当前推荐你 **先在终端完成初始化**，再进入 Codex 聊天界面继续后面的规划、写作、审查。
+
+原因很简单：
+
+- Codex 会拦截未知的 `/命令`
+- 聊天里的自然语言仍可能被模型自由展开
+- 终端 init 向导更接近上游 Claude Code 的分步选择体验
+
+## 8) 初始化完成后，先进入新书项目目录
+
+在你运行完：
+
+```text
+/webnovel-writer:webnovel-init
+```
+
+程序会自动把“进入新书项目目录”的命令复制到剪贴板。
+
+请先在当前终端里直接：
+
+- 按 `Cmd+V`
+- 再按回车
+
+这样就会进入刚刚生成的新书项目目录。
+
+如果自动复制失败，终端会打印一条完整的 `cd "..."` 命令，你手动复制那条命令并回车即可。
+
+## 9) 初始化项目后，补 RAG 配置
+
+进入书项目目录后，再执行：
+
+```bash
+cp .env.example .env
+open -e .env
+```
+
+打开 `.env` 后，你会看到下面 6 个字段：
+
+```bash
+EMBED_BASE_URL=https://api-inference.modelscope.cn/v1
+EMBED_MODEL=Qwen/Qwen3-Embedding-8B
+EMBED_API_KEY=
+
+RERANK_BASE_URL=https://api.jina.ai/v1
+RERANK_MODEL=jina-reranker-v3
+RERANK_API_KEY=
+```
+
+说明：
+
+- `EMBED_BASE_URL`：Embedding 服务地址；默认是 ModelScope 的推理地址
+- `EMBED_MODEL`：Embedding 模型名；默认是 `Qwen/Qwen3-Embedding-8B`
+- `EMBED_API_KEY`：Embedding 服务 Key，需要你自己去对应平台注册获取
+- `RERANK_BASE_URL`：Rerank 服务地址；默认是 Jina 的 API 地址
+- `RERANK_MODEL`：Rerank 模型名；默认是 `jina-reranker-v3`
+- `RERANK_API_KEY`：Rerank 服务 Key，需要你自己去对应平台注册获取
+- 默认地址和模型可以先直接用
+- 如果你换自己的服务商，请把地址 / 模型 / Key 成套一起改
+- 两个 API Key 都需要你去对应平台注册申请
+- 不配 RAG 也能跑部分流程，但检索能力会下降
+
+## 10) 再启动 Codex
 
 继续在同一个终端窗口里执行：
 
@@ -230,21 +320,7 @@ codex
 
 执行后，你会进入 Codex 会话界面。
 
-## 8) 在 Codex 里输入初始化命令
-
-进入 Codex 会话后，**不要直接输入以 `/` 开头的原始命令**。
-
-当前 Codex 会先拦截未知的 `/命令`，它们在到达模型前就会被拒绝。
-
-所以在 Codex 对话里，先输入：
-
-```text
-请使用 webnovel-writer 初始化一个小说项目。
-```
-
-这一步会开始初始化小说项目，并在当前工作目录下创建书项目。
-
-## 9) 初始化完成后，继续使用这些命令
+## 11) 进入 Codex 后，继续使用这些命令
 
 ```text
 请使用 webnovel-writer 规划第 1 卷。
@@ -253,41 +329,21 @@ codex
 请使用 webnovel-writer 打开 dashboard。
 ```
 
-## 10) 初始化项目后，补 RAG 配置
+### 控制器 demo proof（最小验证）
 
-在你运行完：
+进入书项目目录后，在 Codex 中输入：
 
 ```text
-/webnovel-writer:webnovel-init
+开始控制器测试
 ```
 
-之后，进入新建的书项目根目录，创建 `.env`。
+预期结果：
 
-如果项目里已有模板文件：
+- Codex 立刻进入固定 5 步 controller demo
+- 只会写入 `controller-demo/` 与 `.webnovel/controller_sessions/`
+- 不会额外生成 `docs/plans`
 
-```bash
-cp .env.example .env
-```
-
-最小配置示例：
-
-```bash
-EMBED_BASE_URL=https://api-inference.modelscope.cn/v1
-EMBED_MODEL=Qwen/Qwen3-Embedding-8B
-EMBED_API_KEY=your_embed_api_key
-
-RERANK_BASE_URL=https://api.jina.ai/v1
-RERANK_MODEL=jina-reranker-v3
-RERANK_API_KEY=your_rerank_api_key
-```
-
-说明：
-
-- `EMBED_API_KEY`：Embedding 服务 Key
-- `RERANK_API_KEY`：Rerank 服务 Key
-- 不配 RAG 也能跑部分流程，但检索能力会下降
-
-## 11) 如何恢复到安装前状态
+## 12) 如何恢复到安装前状态
 
 如果你想撤销这次 Codex 安装，执行：
 
@@ -301,7 +357,7 @@ RERANK_API_KEY=your_rerank_api_key
 - 如果安装前没有，就删除这次安装生成的文件
 - 同时清理 `install_state.json` 和对应备份目录
 
-## 12) 常见问题
+## 13) 常见问题
 
 ### Q1：`python: command not found`
 
@@ -331,6 +387,8 @@ python3 -m pip install -r requirements.txt
 ~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-dashboard" --execute-dashboard
 ```
 
+Codex 版默认地址是 `http://127.0.0.1:18765`，并会尝试自动打开浏览器；这样可避免和 Claude 版常见的 `8765` 冲突。
+
 ### Q3：我担心装坏 `~/.codex`
 
 先跑：
@@ -354,13 +412,17 @@ python3 scripts/install_codex_support.py
 ~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-init" --mode codex --json
 mkdir -p "$HOME/Documents/webnovel-workspace"
 cd "$HOME/Documents/webnovel-workspace"
+~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-init" --mode shell
+# 此时按 Cmd+V + Enter 进入新书目录
+cp .env.example .env
+open -e .env
 codex
 ```
 
-进入 Codex 后，先输入：
+进入 Codex 后，不要再跑 init；先输入例如：
 
 ```text
-请使用 webnovel-writer 初始化一个小说项目。
+请使用 webnovel-writer 规划第 1 卷。
 ```
 
 如果未来你不想用了，再执行：

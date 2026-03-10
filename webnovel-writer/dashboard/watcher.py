@@ -1,8 +1,8 @@
 """
 Watchdog 文件变更监听器 + SSE 推送
 
-监控 PROJECT_ROOT/.webnovel/ 目录下 state.json / index.db 等文件的写事件，
-通过 SSE 通知所有已连接的前端客户端刷新数据。
+递归监控 PROJECT_ROOT/.webnovel/ 下的 workflow / observability / review 工件，
+通过 SSE 通知前端刷新数据。
 """
 
 from __future__ import annotations
@@ -13,30 +13,69 @@ import time
 from pathlib import Path
 from typing import AsyncGenerator
 
+from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
+
+WATCH_ROOT_NAMES = {"state.json", "index.db", "workflow_state.json"}
+WATCH_SUBDIRS = {"write_workflow", "observability", "reviews", "summaries"}
+WATCH_SUFFIXES = {".json", ".jsonl", ".log", ".md", ".db"}
+
+
+def _should_watch_path(path: Path) -> bool:
+    if not path.name:
+        return False
+    if path.name in WATCH_ROOT_NAMES:
+        return True
+    if path.suffix not in WATCH_SUFFIXES:
+        return False
+    return any(part in WATCH_SUBDIRS for part in path.parts)
+
+
+def _path_category(path: Path) -> str:
+    parts = set(path.parts)
+    if "write_workflow" in parts:
+        return "write_workflow"
+    if "observability" in parts:
+        return "observability"
+    if "reviews" in parts:
+        return "reviews"
+    if "summaries" in parts:
+        return "summaries"
+    if path.name == "workflow_state.json":
+        return "workflow_state"
+    if path.name == "state.json":
+        return "state"
+    if path.name == "index.db":
+        return "index"
+    return "misc"
 
 
 class _WebnovelFileHandler(FileSystemEventHandler):
-    """仅关注 .webnovel/ 目录下关键文件的修改/创建事件。"""
+    """关注 .webnovel/ 目录下关键文件的修改/创建事件。"""
 
-    WATCH_NAMES = {"state.json", "index.db", "workflow_state.json"}
-
-    def __init__(self, notify_callback):
+    def __init__(self, notify_callback, watch_root: Path):
         super().__init__()
         self._notify = notify_callback
+        self._watch_root = watch_root.resolve()
 
-    def on_modified(self, event):
+    def _handle(self, src_path: str, kind: str):
+        path = Path(src_path)
+        try:
+            rel = path.resolve().relative_to(self._watch_root)
+        except Exception:
+            return
+        if _should_watch_path(rel):
+            self._notify(path, rel, kind)
+
+    def on_modified(self, event: FileModifiedEvent):
         if event.is_directory:
             return
-        if Path(event.src_path).name in self.WATCH_NAMES:
-            self._notify(event.src_path, "modified")
+        self._handle(event.src_path, "modified")
 
-    def on_created(self, event):
+    def on_created(self, event: FileCreatedEvent):
         if event.is_directory:
             return
-        if Path(event.src_path).name in self.WATCH_NAMES:
-            self._notify(event.src_path, "created")
+        self._handle(event.src_path, "created")
 
 
 class FileWatcher:
@@ -46,11 +85,10 @@ class FileWatcher:
         self._observer: Observer | None = None
         self._subscribers: list[asyncio.Queue] = []
         self._loop: asyncio.AbstractEventLoop | None = None
-
-    # --- 订阅管理 ---
+        self._watch_dir: Path | None = None
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=64)
+        q: asyncio.Queue = asyncio.Queue(maxsize=128)
         self._subscribers.append(q)
         return q
 
@@ -60,11 +98,17 @@ class FileWatcher:
         except ValueError:
             pass
 
-    # --- 推送 ---
-
-    def _on_change(self, path: str, kind: str):
-        """在 watchdog 线程中调用，向主事件循环投递通知。"""
-        msg = json.dumps({"file": Path(path).name, "kind": kind, "ts": time.time()})
+    def _on_change(self, path: Path, rel_path: Path, kind: str):
+        msg = json.dumps(
+            {
+                "file": path.name,
+                "relative_path": str(rel_path).replace("\\", "/"),
+                "category": _path_category(rel_path),
+                "kind": kind,
+                "ts": time.time(),
+            },
+            ensure_ascii=False,
+        )
         if self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._dispatch, msg)
 
@@ -78,14 +122,12 @@ class FileWatcher:
         for dq in dead:
             self.unsubscribe(dq)
 
-    # --- 生命周期 ---
-
     def start(self, watch_dir: Path, loop: asyncio.AbstractEventLoop):
-        """启动 watchdog observer，监听 watch_dir。"""
         self._loop = loop
-        handler = _WebnovelFileHandler(self._on_change)
+        self._watch_dir = watch_dir.resolve()
+        handler = _WebnovelFileHandler(self._on_change, self._watch_dir)
         self._observer = Observer()
-        self._observer.schedule(handler, str(watch_dir), recursive=False)
+        self._observer.schedule(handler, str(self._watch_dir), recursive=True)
         self._observer.daemon = True
         self._observer.start()
 
