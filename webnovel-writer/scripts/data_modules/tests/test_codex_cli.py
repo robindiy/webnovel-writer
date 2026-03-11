@@ -76,6 +76,23 @@ def test_prepare_command_returns_source_workflow_for_write_in_codex_mode(monkeyp
     assert payload["action"]["command_line"][-2:] == ["--mode", "fast"]
 
 
+def test_prepare_command_accepts_single_token_shell_style_write(monkeypatch, tmp_path):
+    module = _load_module()
+    project_root = (tmp_path / "book").resolve()
+
+    monkeypatch.setattr(module, "_resolve_project_root", lambda **_kwargs: project_root)
+    monkeypatch.setattr(module, "resolve_python_executable", lambda: "/usr/bin/python3")
+
+    payload = module.prepare_command(["webnovel-write 19"], mode="codex")
+
+    assert payload["status"] == "ok"
+    assert payload["command"]["name"] == "webnovel-write"
+    assert payload["command"]["args"] == ["19"]
+    assert payload["action"]["type"] == "run_source_workflow"
+    assert "--chapter" in payload["action"]["command_line"]
+    assert "19" in payload["action"]["command_line"]
+
+
 def test_prepare_command_returns_source_workflow_for_review_in_shell_mode(monkeypatch, tmp_path):
     module = _load_module()
     project_root = (tmp_path / "book").resolve()

@@ -51,6 +51,26 @@ def test_parse_shell_fallback_command():
     assert command.slash_command == "/webnovel-writer:webnovel-review 1-5"
 
 
+def test_parse_single_token_shell_write_command():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["webnovel-write 19"])
+
+    assert command.name == "webnovel-write"
+    assert command.args == ("19",)
+    assert command.slash_command == "/webnovel-writer:webnovel-write 19"
+
+
+def test_parse_single_token_shell_write_command_with_mode():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["webnovel-write 19 --fast"])
+
+    assert command.name == "webnovel-write"
+    assert command.args == ("19", "--fast")
+    assert command.slash_command == "/webnovel-writer:webnovel-write 19 --fast"
+
+
 def test_reject_unknown_command():
     module = _load_registry_module()
 
@@ -78,6 +98,26 @@ def test_parse_natural_language_write_command():
     assert command.name == "webnovel-write"
     assert command.args == ("12",)
     assert command.slash_command == "/webnovel-writer:webnovel-write 12"
+
+
+def test_parse_natural_language_write_command_with_webnovel_write_keyword():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["请使用webnovel-write 开始撰写第19章"])
+
+    assert command.name == "webnovel-write"
+    assert command.args == ("19",)
+    assert command.slash_command == "/webnovel-writer:webnovel-write 19"
+
+
+def test_parse_natural_language_review_intent_overrides_webnovel_write_keyword():
+    module = _load_registry_module()
+
+    command = module.parse_argv(["请使用webnovel-write 开始审查第8章"])
+
+    assert command.name == "webnovel-review"
+    assert command.args == ("8",)
+    assert command.slash_command == "/webnovel-writer:webnovel-review 8"
 
 
 def test_parse_natural_language_review_range_command():

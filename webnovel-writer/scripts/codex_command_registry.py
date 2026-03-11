@@ -110,6 +110,19 @@ def _parse_natural_language_text(text: str) -> ParsedCommand:
     raw = str(text or "").strip()
     if not raw:
         raise ValueError("Missing webnovel command text")
+    normalized = raw.casefold()
+
+    # Intent-first guard: if the sentence clearly asks to "review chapter X",
+    # prefer review routing even when it accidentally includes "webnovel-write".
+    review_intent = (
+        "review" in normalized
+        or "审查" in raw
+        or "审核" in raw
+        or "复查" in raw
+    )
+    review_range = _extract_range_arg(raw, "章")
+    if review_intent and review_range:
+        return _build_parsed_command(COMMAND_SPECS["webnovel-review"], review_range)
 
     explicit_map = (
         ("webnovel-init", ()),
@@ -134,7 +147,6 @@ def _parse_natural_language_text(text: str) -> ParsedCommand:
     if _contains_command_name(raw, "webnovel-query"):
         return _build_parsed_command(COMMAND_SPECS["webnovel-query"], ())
 
-    normalized = raw.casefold()
     if "初始化" in raw and any(keyword in raw for keyword in ("小说", "项目", "书")):
         return _build_parsed_command(COMMAND_SPECS["webnovel-init"], ())
     if any(keyword in raw for keyword in ("规划", "计划")) and "卷" in raw:
@@ -178,6 +190,19 @@ def parse_command_text(text: str) -> ParsedCommand:
 def parse_argv(argv: Sequence[str]) -> ParsedCommand:
     if not argv:
         raise ValueError("Missing webnovel command")
+
+    # Some callers pass a whole shell-like command as one argv item,
+    # e.g. ["webnovel-write 19"]. Split once so chapter/range args survive.
+    if len(argv) == 1:
+        raw_single = str(argv[0]).strip()
+        if not raw_single:
+            raise ValueError("Missing webnovel command")
+        try:
+            expanded = shlex.split(raw_single)
+        except ValueError:
+            expanded = [raw_single]
+        if len(expanded) > 1:
+            return parse_argv(expanded)
 
     first = str(argv[0]).strip()
     if not first:

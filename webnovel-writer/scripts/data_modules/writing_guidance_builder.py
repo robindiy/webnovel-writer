@@ -458,21 +458,35 @@ def is_checklist_item_completed(item: Dict[str, Any], reader_signal: Dict[str, A
 
     if item_id == "hook_diversification":
         hook_usage = reader_signal.get("hook_type_usage") or {}
-        return len(hook_usage) >= 2
+        if not isinstance(hook_usage, dict) or len(hook_usage) < 3:
+            return False
+        counts = [max(0.0, float(v or 0.0)) for v in hook_usage.values()]
+        total = sum(counts)
+        if total <= 0:
+            return False
+        dominant_ratio = max(counts) / total
+        return dominant_ratio <= 0.7
 
     if item_id == "coolpoint_combo":
         pattern_usage = reader_signal.get("pattern_usage") or {}
-        return len(pattern_usage) >= 2
+        if not isinstance(pattern_usage, dict) or len(pattern_usage) < 3:
+            return False
+        counts = [max(0.0, float(v or 0.0)) for v in pattern_usage.values()]
+        total = sum(counts)
+        if total <= 0:
+            return False
+        dominant_ratio = max(counts) / total
+        return dominant_ratio <= 0.7
 
     if item_id == "genre_anchor_consistency":
-        return True
+        score = reader_signal.get("genre_anchor_score")
+        return isinstance(score, (int, float)) and float(score) >= 0.75
 
     source = str(item.get("source") or "")
     if source.startswith("fallback"):
-        return True
+        return False
 
     if source.startswith("methodology."):
-        # 方法论条目当前作为软提示，仅做观察与引导，不参与扣分。
-        return True
+        return False
 
     return False

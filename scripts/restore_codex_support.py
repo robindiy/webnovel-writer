@@ -13,6 +13,7 @@ from typing import Optional, Union
 
 
 SUPPORT_ROOT_NAME = "webnovel-writer"
+BOOK_PROJECT_HELPER_REL = Path("scripts") / "run_webnovel_command.py"
 
 
 def _default_codex_home() -> Path:
@@ -87,14 +88,19 @@ def restore_codex_support(*, codex_home: Optional[Union[str, Path]] = None) -> d
     skill_target = Path(targets["skill_root"]).expanduser().resolve()
     wrapper_target = Path(targets["wrapper_path"]).expanduser().resolve()
     restore_wrapper_target = Path(targets["restore_wrapper_path"]).expanduser().resolve()
+    raw_book_project_helper = str(targets.get("book_project_helper_path") or "").strip()
+    book_project_helper_target = Path(raw_book_project_helper).expanduser().resolve() if raw_book_project_helper else None
 
     _remove_path(skill_target)
     _remove_path(wrapper_target)
     _remove_path(restore_wrapper_target)
+    if book_project_helper_target:
+        _remove_path(book_project_helper_target)
 
     restored_skill = False
     restored_wrapper = False
     restored_restore_wrapper = False
+    restored_book_project_helper = False
 
     if previous_install.get("skill_root_backed_up"):
         restored_skill = _restore_path(
@@ -111,6 +117,11 @@ def restore_codex_support(*, codex_home: Optional[Union[str, Path]] = None) -> d
             backup_dir / "bin" / "webnovel-codex-restore",
             restore_wrapper_target,
         )
+    if previous_install.get("book_project_helper_backed_up") and book_project_helper_target:
+        restored_book_project_helper = _restore_path(
+            backup_dir / "book-project" / BOOK_PROJECT_HELPER_REL,
+            book_project_helper_target,
+        )
 
     _cleanup_state(resolved_codex_home, backup_dir)
 
@@ -119,6 +130,7 @@ def restore_codex_support(*, codex_home: Optional[Union[str, Path]] = None) -> d
         "restored_skill": restored_skill,
         "restored_wrapper": restored_wrapper,
         "restored_restore_wrapper": restored_restore_wrapper,
+        "restored_book_project_helper": restored_book_project_helper,
     }
 
 

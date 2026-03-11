@@ -32,6 +32,7 @@ REVIEW_RUNNER = SCRIPTS_DIR / "review_agents_runner.py"
 WRITE_ARTIFACTS_ROOT_REL = Path(".webnovel") / "write_workflow"
 OBSERVABILITY_WRITE_REL = Path(".webnovel") / "observability" / "codex_write_workflow.jsonl"
 OBSERVABILITY_DATA_REL = Path(".webnovel") / "observability" / "data_agent_timing.jsonl"
+OBSERVABILITY_CONTEXT_REL = Path(".webnovel") / "observability" / "context_agent_metrics.jsonl"
 
 CORE_CONSTRAINTS_PATH = REPO_ROOT / "references" / "shared" / "core-constraints.md"
 CONTEXT_AGENT_PATH = REPO_ROOT / "agents" / "context-agent.md"
@@ -45,6 +46,24 @@ TYPESETTING_PATH = REPO_ROOT / "skills" / "webnovel-write" / "references" / "wri
 DEFAULT_STAGE_TIMEOUT_SECONDS = int(os.environ.get("WEBNOVEL_WRITE_STAGE_TIMEOUT_SECONDS", "600") or "600")
 DEFAULT_STAGE_RETRIES = int(os.environ.get("WEBNOVEL_WRITE_STAGE_RETRIES", "4") or "4")
 DEFAULT_STAGE_RETRY_BACKOFF_SECONDS = float(os.environ.get("WEBNOVEL_WRITE_STAGE_RETRY_BACKOFF_SECONDS", "3") or "3")
+DEFAULT_STAGE_RECONNECT_RETRY_THRESHOLD = int(os.environ.get("WEBNOVEL_STAGE_RECONNECT_RETRY_THRESHOLD", "3") or "3")
+DEFAULT_CONTEXT_STAGE_TIMEOUT_SECONDS = int(
+    os.environ.get("WEBNOVEL_CONTEXT_STAGE_TIMEOUT_SECONDS", str(DEFAULT_STAGE_TIMEOUT_SECONDS))
+    or str(DEFAULT_STAGE_TIMEOUT_SECONDS)
+)
+DEFAULT_CONTEXT_STAGE_RETRIES = int(
+    os.environ.get("WEBNOVEL_CONTEXT_STAGE_RETRIES", str(DEFAULT_STAGE_RETRIES))
+    or str(DEFAULT_STAGE_RETRIES)
+)
+ENABLE_CONTEXT_DRAFT_COMPACT_RETRY = str(
+    os.environ.get("WEBNOVEL_CONTEXT_DRAFT_COMPACT_RETRY", "1") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+USE_MAIN_PROCESS_CONTEXT_DRAFT_PACKAGE = str(
+    os.environ.get("WEBNOVEL_CONTEXT_DRAFT_MAIN_PROCESS", "1") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+DISABLE_CONTEXT_COMPRESSION = str(
+    os.environ.get("WEBNOVEL_DISABLE_CONTEXT_COMPRESSION", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def now_iso() -> str:
@@ -367,28 +386,194 @@ def _build_stage_schema_context() -> Dict[str, Any]:
     }
 
 
-def _build_stage_schema_context_task_brief() -> Dict[str, Any]:
-    base = _build_stage_schema_context()["properties"]
+def _build_stage_schema_context_story_spine() -> Dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["chapter", "task_brief"],
+        "required": ["chapter", "story_spine"],
         "properties": {
-            "chapter": base["chapter"],
-            "task_brief": base["task_brief"],
+            "chapter": {"type": "integer"},
+            "story_spine": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "core_task",
+                    "conflict",
+                    "carry_from_previous",
+                    "must_complete",
+                    "must_not",
+                    "opening_suggestion",
+                ],
+                "properties": {
+                    "core_task": {"type": "string"},
+                    "conflict": {"type": "string"},
+                    "must_complete": {"type": "array", "items": {"type": "string"}},
+                    "must_not": {"type": "array", "items": {"type": "string"}},
+                    "carry_from_previous": {"type": "string"},
+                    "opening_suggestion": {"type": "string"},
+                },
+            },
         },
     }
 
 
-def _build_stage_schema_context_contract_v2() -> Dict[str, Any]:
-    base = _build_stage_schema_context()["properties"]
+def _build_stage_schema_context_cast_constraints() -> Dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["chapter", "contract_v2"],
+        "required": ["chapter", "cast_constraints"],
         "properties": {
-            "chapter": base["chapter"],
-            "contract_v2": base["contract_v2"],
+            "chapter": {"type": "integer"},
+            "cast_constraints": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["characters", "scene_constraints", "time_constraints", "style_guidance"],
+                "properties": {
+                    "characters": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["name", "role"],
+                            "properties": {
+                                "name": {"type": "string"},
+                                "role": {"type": "string"},
+                            },
+                        },
+                    },
+                    "scene_constraints": {"type": "array", "items": {"type": "string"}},
+                    "time_constraints": {"type": "array", "items": {"type": "string"}},
+                    "style_guidance": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    }
+
+
+def _build_stage_schema_context_foreshadow_plan() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["chapter", "foreshadow_plan"],
+        "properties": {
+            "chapter": {"type": "integer"},
+            "foreshadow_plan": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["foreshadowing", "foreshadowing_plan"],
+                "properties": {
+                    "foreshadowing": {"type": "array", "items": {"type": "string"}},
+                    "foreshadowing_plan": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["must_continue", "planned_new", "forbidden_resolve"],
+                        "properties": {
+                            "must_continue": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["id", "content", "purpose"],
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "content": {"type": "string"},
+                                        "purpose": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "planned_new": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["content", "plant_method", "purpose", "expected_payoff"],
+                                    "properties": {
+                                        "content": {"type": "string"},
+                                        "plant_method": {"type": "string"},
+                                        "purpose": {"type": "string"},
+                                        "expected_payoff": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "forbidden_resolve": {"type": "array", "items": {"type": "string"}},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _build_stage_schema_context_reader_pull() -> Dict[str, Any]:
+    base = _build_stage_schema_context()
+    task_props = base["properties"]["task_brief"]["properties"]
+    contract_props = base["properties"]["contract_v2"]["properties"]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["chapter", "reader_pull"],
+        "properties": {
+            "chapter": {"type": "integer"},
+            "reader_pull": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "reading_power",
+                    "strand_strategy",
+                    "is_transition",
+                    "hook_type",
+                    "hook_strength",
+                    "micropayoffs",
+                    "cool_point_pattern",
+                ],
+                "properties": {
+                    "reading_power": task_props["reading_power"],
+                    "strand_strategy": task_props["strand_strategy"],
+                    "is_transition": contract_props["is_transition"],
+                    "hook_type": contract_props["hook_type"],
+                    "hook_strength": contract_props["hook_strength"],
+                    "micropayoffs": contract_props["micropayoffs"],
+                    "cool_point_pattern": contract_props["cool_point_pattern"],
+                },
+            },
+        },
+    }
+
+
+def _build_stage_schema_context_contract_core() -> Dict[str, Any]:
+    base = _build_stage_schema_context()["properties"]["contract_v2"]["properties"]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["chapter", "contract_core"],
+        "properties": {
+            "chapter": {"type": "integer"},
+            "contract_core": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "goal",
+                    "obstacle",
+                    "cost",
+                    "change",
+                    "unresolved_question",
+                    "core_conflict",
+                    "opening_type",
+                    "emotion_pacing",
+                    "info_density",
+                ],
+                "properties": {
+                    "goal": base["goal"],
+                    "obstacle": base["obstacle"],
+                    "cost": base["cost"],
+                    "change": base["change"],
+                    "unresolved_question": base["unresolved_question"],
+                    "core_conflict": base["core_conflict"],
+                    "opening_type": base["opening_type"],
+                    "emotion_pacing": base["emotion_pacing"],
+                    "info_density": base["info_density"],
+                },
+            },
         },
     }
 
@@ -402,6 +587,18 @@ def _build_stage_schema_context_draft_package() -> Dict[str, Any]:
         "properties": {
             "chapter": base["chapter"],
             "draft_package": base["draft_package"],
+        },
+    }
+
+
+def _build_stage_schema_context_draft_package_wire() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["chapter", "draft_package"],
+        "properties": {
+            "chapter": {"type": "integer"},
+            "draft_package": {"type": "object", "additionalProperties": True},
         },
     }
 
@@ -658,6 +855,8 @@ def _is_retryable_provider_error(message: str) -> bool:
             "stream disconnected",
             "bad gateway",
             "reconnecting...",
+            "too many requests",
+            "provider reconnect",
         )
     )
 
@@ -704,8 +903,11 @@ def _terminate_process(proc: subprocess.Popen[str]) -> int:
 def _workflow_step_id_for_stage(stage_name: str) -> Optional[str]:
     return {
         "context_agent": "Step 1",
-        "context_task_brief": "Step 1",
-        "context_contract_v2": "Step 1",
+        "context_story_spine": "Step 1",
+        "context_cast_constraints": "Step 1",
+        "context_foreshadow_plan": "Step 1",
+        "context_reader_pull": "Step 1",
+        "context_contract_core": "Step 1",
         "context_draft_package": "Step 1",
         "draft": "Step 2A",
         "style_adapter": "Step 2B",
@@ -717,8 +919,11 @@ def _workflow_step_id_for_stage(stage_name: str) -> Optional[str]:
 def _stage_display_name(stage_name: str) -> str:
     return {
         "context_agent": "Context Agent",
-        "context_task_brief": "Context Agent / Task Brief",
-        "context_contract_v2": "Context Agent / Contract v2",
+        "context_story_spine": "Context Agent / Story Spine",
+        "context_cast_constraints": "Context Agent / Cast Constraints",
+        "context_foreshadow_plan": "Context Agent / Foreshadow Plan",
+        "context_reader_pull": "Context Agent / Reader Pull",
+        "context_contract_core": "Context Agent / Contract Core",
         "context_draft_package": "Context Agent / Draft Package",
         "draft": "正文起草",
         "style_adapter": "风格适配",
@@ -1092,6 +1297,9 @@ def run_codex_json_stage(
         stdout_done = False
         stderr_done = False
         turn_completed = False
+        reconnect_errors = 0
+        force_retry = False
+        force_retry_reason = ""
         validated_payload: Dict[str, Any] | None = None
         last_progress_note = ""
         last_progress_at = 0.0
@@ -1190,6 +1398,26 @@ def run_codex_json_stage(
                                 message=note,
                             )
                             maybe_update_progress(note)
+                            if event_type == "error":
+                                message = str(payload.get("message") or "").strip()
+                                if _is_retryable_provider_error(message):
+                                    reconnect_errors += 1
+                                    if reconnect_errors >= max(1, DEFAULT_STAGE_RECONNECT_RETRY_THRESHOLD):
+                                        force_retry = True
+                                        force_retry_reason = (
+                                            f"{stage_name} provider reconnect 达到阈值 "
+                                            f"({reconnect_errors} >= {max(1, DEFAULT_STAGE_RECONNECT_RETRY_THRESHOLD)})"
+                                        )
+                                        observe_write_event(
+                                            project_root,
+                                            stage_name,
+                                            attempt=attempt,
+                                            channel="workflow",
+                                            event="attempt.force_retry",
+                                            message=f"{_stage_display_name(stage_name)} · {force_retry_reason}",
+                                        )
+                                        maybe_update_progress(f"{_stage_display_name(stage_name)} · 连续重连过多，提前重试")
+                                        break
                 else:
                     stderr_lines.append(line)
                     stderr_fh.write(line)
@@ -1240,7 +1468,28 @@ def run_codex_json_stage(
             },
         )
 
-        if timeout_hit:
+        if force_retry:
+            last_error = force_retry_reason or f"{stage_name} provider reconnect 过多"
+            write_json(
+                execution_path,
+                {
+                    "stage": stage_name,
+                    "chapter": chapter,
+                    "attempt": attempt,
+                    "success": False,
+                    "error": last_error,
+                    "sandbox_mode": sandbox_mode,
+                    "stdout_log": _display_path(stdout_log),
+                    "stderr_log": _display_path(stderr_log),
+                    "trace_path": _display_path(trace_path),
+                    "trace_summary": trace_summary,
+                    "workspace_file": _display_path(workspace_file) if workspace_file else None,
+                    "return_code": return_code,
+                    "turn_completed": turn_completed,
+                    "reconnect_errors": reconnect_errors,
+                },
+            )
+        elif timeout_hit:
             last_error = f"{stage_name} 超时: {timeout_seconds}s"
             write_json(
                 execution_path,
@@ -1358,7 +1607,7 @@ def run_codex_json_stage(
                 },
             )
 
-        if attempt <= retries and _is_retryable_provider_error(last_error):
+        if attempt <= retries and (force_retry or _is_retryable_provider_error(last_error)):
             observe_write_event(
                 project_root,
                 stage_name,
@@ -1522,9 +1771,117 @@ def _load_context_materials(project_root: Path, chapter: int) -> Dict[str, Any]:
 
 def _truncate_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
+    if DISABLE_CONTEXT_COMPRESSION:
+        return text
     if len(text) <= limit:
         return text
     return text[:limit] + "\n...(已截断)"
+
+
+def _sanitize_context_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"\n?\.\.\.\(已截断\)", "", normalized)
+    normalized = re.sub(r"\s*\n\s*", " ", normalized)
+    normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+    normalized = re.sub(r"([。！？；，,.!?;:：])\1+", r"\1", normalized)
+    return normalized
+
+
+def _clip_context_text(value: Any, limit: int) -> str:
+    text = _sanitize_context_text(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip("，。；：,.!?！？；: ")
+
+
+def _clip_context_list(values: Any, *, item_limit: int, text_limit: int) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    cleaned: List[str] = []
+    for raw in values:
+        text = _clip_context_text(raw, text_limit)
+        if not text or text in cleaned:
+            continue
+        cleaned.append(text)
+        if len(cleaned) >= item_limit:
+            break
+    return cleaned
+
+
+def _clip_context_characters(values: Any, *, item_limit: int = 6) -> List[Dict[str, str]]:
+    if not isinstance(values, list):
+        return []
+    rows: List[Dict[str, str]] = []
+    for raw in values:
+        if not isinstance(raw, dict):
+            continue
+        name = _clip_context_text(raw.get("name"), 24)
+        role = _clip_context_text(raw.get("role"), 28)
+        if not name:
+            continue
+        row = {"name": name, "role": role or "角色"}
+        if row in rows:
+            continue
+        rows.append(row)
+        if len(rows) >= item_limit:
+            break
+    return rows
+
+
+def _clip_context_must_continue(values: Any, *, item_limit: int = 4) -> List[Dict[str, str]]:
+    if not isinstance(values, list):
+        return []
+    rows: List[Dict[str, str]] = []
+    for raw in values:
+        if not isinstance(raw, dict):
+            continue
+        item_id = _clip_context_text(raw.get("id"), 40)
+        content = _clip_context_text(raw.get("content"), 90)
+        purpose = _clip_context_text(raw.get("purpose"), 80)
+        if not (item_id and content and purpose):
+            continue
+        row = {"id": item_id, "content": content, "purpose": purpose}
+        if row in rows:
+            continue
+        rows.append(row)
+        if len(rows) >= item_limit:
+            break
+    return rows
+
+
+def _clip_context_planned_new(values: Any, *, item_limit: int = 4) -> List[Dict[str, str]]:
+    if not isinstance(values, list):
+        return []
+    rows: List[Dict[str, str]] = []
+    for raw in values:
+        if not isinstance(raw, dict):
+            continue
+        content = _clip_context_text(raw.get("content"), 90)
+        plant_method = _clip_context_text(raw.get("plant_method"), 80)
+        purpose = _clip_context_text(raw.get("purpose"), 80)
+        expected_payoff = _clip_context_text(raw.get("expected_payoff"), 80)
+        if not (content and plant_method and purpose and expected_payoff):
+            continue
+        row = {
+            "content": content,
+            "plant_method": plant_method,
+            "purpose": purpose,
+            "expected_payoff": expected_payoff,
+        }
+        if row in rows:
+            continue
+        rows.append(row)
+        if len(rows) >= item_limit:
+            break
+    return rows
+
+
+def _as_sentence_fragment(value: Any, *, limit: int) -> str:
+    text = _clip_context_text(value, limit).strip()
+    return text.rstrip("。！？!?；;，,")
 
 
 def _compact_foreshadowing_item(raw_item: Any) -> Dict[str, Any] | None:
@@ -1535,13 +1892,20 @@ def _compact_foreshadowing_item(raw_item: Any) -> Dict[str, Any] | None:
         return None
     item = {
         "id": str(raw_item.get("id") or "").strip(),
-        "content": content,
+        "content": _truncate_text(content, 80),
         "status": str(raw_item.get("status") or "").strip(),
     }
-    for field in ("tier", "expected_payoff", "purpose", "plant_method", "note_type"):
+    field_limits = {
+        "tier": 24,
+        "expected_payoff": 60,
+        "purpose": 48,
+        "plant_method": 48,
+        "note_type": 24,
+    }
+    for field, limit in field_limits.items():
         value = str(raw_item.get(field) or "").strip()
         if value:
-            item[field] = value
+            item[field] = _truncate_text(value, limit)
     for source_key, target_key in (("planted_chapter", "planted_chapter"), ("chapter_planted", "planted_chapter"), ("resolved_chapter", "resolved_chapter")):
         value = raw_item.get(source_key)
         if value not in (None, ""):
@@ -1549,7 +1913,115 @@ def _compact_foreshadowing_item(raw_item: Any) -> Dict[str, Any] | None:
     return item
 
 
-def _collect_open_foreshadowing(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _compact_recent_meta_row(chapter: int, row: Dict[str, Any]) -> Dict[str, Any]:
+    compact = {"chapter": chapter}
+    for key in ("title", "dominant_strand", "hook_type", "hook_strength", "bridge_line"):
+        value = row.get(key)
+        if value in (None, "", [], {}):
+            continue
+        compact[key] = _truncate_text(value, 40 if key == "title" else (20 if key == "dominant_strand" else (24 if key == "hook_type" else (18 if key == "hook_strength" else 60))) )
+    for key in ("review_score", "words", "foreshadow_open_count"):
+        value = row.get(key)
+        if value not in (None, ""):
+            compact[key] = value
+    return compact
+
+
+def _compact_timeline_digest(value: Any, *, limit_lines: int = 3, limit_chars: int = 120) -> str:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if DISABLE_CONTEXT_COMPRESSION:
+        return "\n".join(lines)
+    digest = "\n".join(lines[:limit_lines])
+    return _truncate_text(digest, limit_chars)
+
+
+def _signal_tokens(*parts: Any) -> List[str]:
+    seen: set[str] = set()
+    tokens: List[str] = []
+    for part in parts:
+        text = str(part or "")
+        for token in re.findall(r"[A-Za-z0-9_]+|[一-鿿]", text):
+            token = token.strip().lower()
+            if len(token) <= 1 and not re.match(r"[一-鿿]", token):
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+    return tokens
+
+
+def _relevance_score(value: Any, signal_tokens: Sequence[str]) -> int:
+    haystack = str(value or "").lower()
+    score = 0
+    for token in signal_tokens:
+        if token and token in haystack:
+            score += max(1, len(token))
+    return score
+
+
+def _sort_by_relevance(items: Sequence[Dict[str, Any]], *, signal_tokens: Sequence[str], text_fn, limit: int) -> List[Dict[str, Any]]:
+    scored: List[tuple[int, int, Dict[str, Any]]] = []
+    for index, item in enumerate(items):
+        score = _relevance_score(text_fn(item), signal_tokens)
+        scored.append((score, -index, item))
+    scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
+    ordered = [item for _score, _idx, item in scored]
+    if not ordered:
+        return []
+    top = ordered[:limit]
+    if any(_relevance_score(text_fn(item), signal_tokens) > 0 for item in top):
+        return top
+    return list(items[:limit])
+
+
+def _prune_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            pruned = _prune_empty(item)
+            if pruned in (None, "", [], {}):
+                continue
+            cleaned[key] = pruned
+        return cleaned
+    if isinstance(value, list):
+        cleaned = []
+        for item in value:
+            pruned = _prune_empty(item)
+            if pruned in (None, "", [], {}):
+                continue
+            cleaned.append(pruned)
+        return cleaned
+    return value
+
+
+def _compact_json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_size_bytes(value: Any) -> int:
+    return len(_compact_json_text(value).encode("utf-8"))
+
+
+CONTEXT_STAGE_INPUT_BUDGETS = {
+    "context_story_spine": 2500,
+    "context_cast_constraints": 3000,
+    "context_foreshadow_plan": 3600,
+    "context_reader_pull": 2300,
+    "context_contract_core": 5200,
+    "context_draft_package": 4200,
+}
+ENFORCE_CONTEXT_STAGE_INPUT_BUDGET = str(os.environ.get("WEBNOVEL_ENFORCE_CONTEXT_STAGE_INPUT_BUDGET", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _collect_open_foreshadowing(state: Dict[str, Any], *, signal_tokens: Sequence[str]) -> List[Dict[str, Any]]:
     if not isinstance(state, dict):
         return []
     plot_threads = state.get("plot_threads")
@@ -1567,233 +2039,1193 @@ def _collect_open_foreshadowing(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         if status in {"已回收", "resolved", "closed"}:
             continue
         items.append(compact)
-    return items[:12]
+    if DISABLE_CONTEXT_COMPRESSION:
+        return items
+    ranked = _sort_by_relevance(
+        items,
+        signal_tokens=signal_tokens,
+        text_fn=lambda item: " ".join(str(item.get(key) or "") for key in ("id", "content", "purpose", "expected_payoff", "plant_method")),
+        limit=6,
+    )
+    return ranked
 
 
 def _compact_context_materials(materials: Dict[str, Any], chapter: int) -> Dict[str, Any]:
     extract_payload = materials.get("extract_context") or {}
     context_payload = materials.get("context_manager") or {}
     state = materials.get("state") or {}
-    recent_meta = []
+    signal_tokens = _signal_tokens(
+        extract_payload.get("outline"),
+        "\n".join(extract_payload.get("previous_summaries") or []),
+        extract_payload.get("state_summary"),
+    )
+    recent_meta: List[Dict[str, Any]] = []
     chapter_meta = (state.get("chapter_meta") or {}) if isinstance(state, dict) else {}
-    for ch in range(max(1, chapter - 3), chapter):
-        row = chapter_meta.get(f"{ch:04d}")
-        if isinstance(row, dict):
-            recent_meta.append({"chapter": ch, **row})
+    if DISABLE_CONTEXT_COMPRESSION:
+        chapter_meta_items: List[tuple[int, Dict[str, Any]]] = []
+        for key, row in chapter_meta.items():
+            if not isinstance(row, dict):
+                continue
+            try:
+                ch = int(str(key))
+            except Exception:
+                continue
+            if ch >= chapter:
+                continue
+            chapter_meta_items.append((ch, row))
+        chapter_meta_items.sort(key=lambda item: item[0])
+        for ch, row in chapter_meta_items:
+            recent_meta.append(_compact_recent_meta_row(ch, row))
+    else:
+        for ch in range(max(1, chapter - 2), chapter):
+            row = chapter_meta.get(f"{ch:04d}")
+            if isinstance(row, dict):
+                recent_meta.append(_compact_recent_meta_row(ch, row))
 
-    guidance_items = []
+    guidance_items: List[str] = []
     writing_guidance = context_payload.get("writing_guidance") or {}
     if isinstance(writing_guidance, dict):
-        guidance_items = list(writing_guidance.get("guidance_items") or [])[:8]
+        source_guidance = list(writing_guidance.get("guidance_items") or [])
+        if not DISABLE_CONTEXT_COMPRESSION:
+            source_guidance = source_guidance[:3]
+        for item in source_guidance:
+            text = _truncate_text(item, 40)
+            if text:
+                guidance_items.append(text)
 
-    recent_reading_power = []
-    for row in (materials.get("recent_reading_power") or [])[:5]:
+    recent_reading_power: List[Dict[str, Any]] = []
+    reading_rows = list(materials.get("recent_reading_power") or [])
+    if not DISABLE_CONTEXT_COMPRESSION:
+        reading_rows = reading_rows[:4]
+    for row in reading_rows:
         if not isinstance(row, dict):
             continue
         recent_reading_power.append(
-            {
-                "chapter": row.get("end_chapter") or row.get("chapter"),
-                "overall_score": row.get("overall_score"),
-                "severity_counts": row.get("severity_counts"),
-            }
+            _prune_empty(
+                {
+                    "chapter": row.get("end_chapter") or row.get("chapter"),
+                    "overall_score": row.get("overall_score"),
+                }
+            )
         )
 
-    core_entities = []
-    for row in (materials.get("core_entities") or [])[:20]:
+    core_entity_rows: List[Dict[str, Any]] = []
+    for row in materials.get("core_entities") or []:
         if not isinstance(row, dict):
             continue
-        core_entities.append(
-            {
-                "id": row.get("id"),
-                "name": row.get("canonical_name") or row.get("name"),
-                "type": row.get("type"),
-                "tier": row.get("tier"),
-            }
+        core_entity_rows.append(
+            _prune_empty(
+                {
+                    "id": row.get("id"),
+                    "name": _truncate_text(row.get("canonical_name") or row.get("name"), 24),
+                    "type": row.get("type"),
+                    "tier": row.get("tier"),
+                }
+            )
         )
+    core_entities = _sort_by_relevance(
+        core_entity_rows,
+        signal_tokens=signal_tokens,
+        text_fn=lambda item: " ".join(str(item.get(key) or "") for key in ("name", "id", "type", "tier")),
+        limit=len(core_entity_rows) if DISABLE_CONTEXT_COMPRESSION else 6,
+    )
+    selected_ids = {str(item.get("id") or "").strip() for item in core_entities if str(item.get("id") or "").strip()}
 
     recent_appearances = []
-    for row in (materials.get("recent_appearances") or [])[:12]:
+    for row in materials.get("recent_appearances") or []:
         if not isinstance(row, dict):
             continue
+        entity_id = str(row.get("entity_id") or row.get("id") or "").strip()
+        if selected_ids and entity_id and entity_id not in selected_ids:
+            continue
         recent_appearances.append(
-            {
-                "chapter": row.get("chapter"),
-                "entity": row.get("entity_id") or row.get("canonical_name") or row.get("name"),
-                "mentions": row.get("mentions"),
-            }
+            _prune_empty(
+                {
+                    "chapter": row.get("chapter") or row.get("last_chapter"),
+                    "entity": entity_id or row.get("canonical_name") or row.get("name"),
+                    "mentions": row.get("mentions") or row.get("total"),
+                }
+            )
         )
+    if not DISABLE_CONTEXT_COMPRESSION:
+        recent_appearances = recent_appearances[:4]
 
-    return {
-        "chapter": chapter,
-        "outline": _truncate_text(extract_payload.get("outline"), 2600),
-        "previous_summaries": [
-            _truncate_text(item, 500) for item in (extract_payload.get("previous_summaries") or [])[:3]
-        ],
-        "state_summary": _truncate_text(extract_payload.get("state_summary"), 1800),
-        "reader_signal": context_payload.get("reader_signal"),
-        "genre_profile": context_payload.get("genre_profile"),
-        "writing_guidance": guidance_items,
-        "timeline_excerpt": _truncate_text(materials.get("timeline_text"), 1200),
-        "recent_chapter_meta": recent_meta,
-        "open_foreshadowing": _collect_open_foreshadowing(state),
-        "recent_reading_power": recent_reading_power,
-        "pattern_usage_stats": materials.get("pattern_usage_stats"),
-        "hook_type_stats": materials.get("hook_type_stats"),
-        "debt_summary": materials.get("debt_summary"),
-        "core_entities": core_entities,
-        "recent_appearances": recent_appearances,
-    }
+    timeline_anchor_digest = _compact_timeline_digest(materials.get("timeline_text"))
+    previous_summaries = list(extract_payload.get("previous_summaries") or [])
+    if not DISABLE_CONTEXT_COMPRESSION:
+        previous_summaries = previous_summaries[:2]
+    compact_previous_summaries = [_truncate_text(item, 90) for item in previous_summaries]
+    return _prune_empty(
+        {
+            "chapter": chapter,
+            "outline": _truncate_text(extract_payload.get("outline"), 180),
+            "previous_summaries": compact_previous_summaries,
+            "state_summary": _truncate_text(extract_payload.get("state_summary"), 140),
+            "reader_signal": context_payload.get("reader_signal"),
+            "genre_profile": context_payload.get("genre_profile"),
+            "writing_guidance": guidance_items,
+            "timeline_anchor_digest": timeline_anchor_digest,
+            "recent_chapter_meta": recent_meta,
+            "open_foreshadowing": _collect_open_foreshadowing(state, signal_tokens=signal_tokens),
+            "recent_reading_power": recent_reading_power,
+            "pattern_usage_stats": materials.get("pattern_usage_stats"),
+            "hook_type_stats": materials.get("hook_type_stats"),
+            "debt_summary": materials.get("debt_summary"),
+            "core_entities": core_entities,
+            "recent_appearances": recent_appearances,
+        }
+    )
 
 
-CONTEXT_AGENT_SEGMENTS = ("context_task_brief", "context_contract_v2", "context_draft_package")
-
-
-def _compact_json_text(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+CONTEXT_AGENT_SEGMENTS = (
+    "context_story_spine",
+    "context_cast_constraints",
+    "context_foreshadow_plan",
+    "context_reader_pull",
+    "context_contract_core",
+    "context_draft_package",
+)
 
 
 def _context_material_slice(compact: Dict[str, Any], keys: Sequence[str]) -> Dict[str, Any]:
-    return {key: compact.get(key) for key in keys if key in compact}
+    return _prune_empty({key: compact.get(key) for key in keys if key in compact})
 
 
-def _build_context_task_brief_prompt(chapter: int, compact: Dict[str, Any]) -> str:
-    materials = _context_material_slice(
-        compact,
-        (
-            "chapter",
-            "outline",
-            "previous_summaries",
-            "state_summary",
-            "timeline_excerpt",
-            "recent_chapter_meta",
-            "open_foreshadowing",
-            "recent_reading_power",
-            "writing_guidance",
-            "debt_summary",
-            "core_entities",
-            "recent_appearances",
-        ),
+def _build_context_story_spine_input(chapter: int, compact: Dict[str, Any]) -> Dict[str, Any]:
+    recent_meta = compact.get("recent_chapter_meta") or []
+    if not DISABLE_CONTEXT_COMPRESSION:
+        recent_meta = recent_meta[-1:]
+    return _prune_empty(
+        {
+            "chapter": chapter,
+            "outline": compact.get("outline"),
+            "previous_summaries": compact.get("previous_summaries"),
+            "state_summary": compact.get("state_summary"),
+            "timeline_anchor": compact.get("timeline_anchor_digest"),
+            "recent_chapter_meta": recent_meta,
+        }
     )
-    return f"""你是 webnovel-writer 的 `context-agent`，当前是 Step 1 的子阶段 1/3。
-
-目标：只生成第 {chapter} 章的 `task_brief`。
-
-硬规则：
-- 只输出 JSON；不要解释、不要 Markdown、不要代码块
-- 顶层只能包含 `chapter` 与 `task_brief`
-- `chapter` 必须等于 {chapter}
-- 不要输出 `contract_v2` 和 `draft_package`
-- 伏笔不是事后总结，必须先设计再写：`foreshadowing_plan` 必须显式给出 `must_continue / planned_new / forbidden_resolve`
-- 若材料冲突，以大纲与设定优先
-
-材料（已裁剪 JSON）：
-{_compact_json_text(materials)}
-
-输出要求：
-- `task_brief` 必须覆盖：
-  - `core_task` / `conflict` / `must_complete` / `must_not` / `villain_tier`
-  - `carry_from_previous` / `opening_suggestion`
-  - `characters` / `scene_constraints` / `time_constraints` / `style_guidance`
-  - `foreshadowing` / `foreshadowing_plan` / `reading_power` / `strand_strategy`
-- `planned_new` 可为空数组，但若非空必须给出 `content / plant_method / purpose / expected_payoff`
-"""
 
 
-def _build_context_contract_prompt(chapter: int, compact: Dict[str, Any], task_brief: Dict[str, Any]) -> str:
-    payload = {
-        "materials": _context_material_slice(
-            compact,
-            (
-                "chapter",
-                "outline",
-                "previous_summaries",
-                "state_summary",
-                "timeline_excerpt",
-                "recent_chapter_meta",
-                "open_foreshadowing",
-                "recent_reading_power",
-            ),
-        ),
-        "task_brief": task_brief,
+def _build_context_cast_constraints_input(chapter: int, compact: Dict[str, Any], story_spine: Dict[str, Any]) -> Dict[str, Any]:
+    core_entities = compact.get("core_entities") or []
+    recent_appearances = compact.get("recent_appearances") or []
+    writing_guidance = compact.get("writing_guidance") or []
+    recent_meta = compact.get("recent_chapter_meta") or []
+    if not DISABLE_CONTEXT_COMPRESSION:
+        core_entities = core_entities[:4]
+        recent_appearances = recent_appearances[:3]
+        writing_guidance = writing_guidance[:2]
+        recent_meta = recent_meta[-1:]
+    return _prune_empty(
+        {
+            "chapter": chapter,
+            "story_spine": story_spine,
+            "timeline_anchor": compact.get("timeline_anchor_digest")
+            if DISABLE_CONTEXT_COMPRESSION
+            else _truncate_text(compact.get("timeline_anchor_digest"), 60),
+            "recent_chapter_meta": recent_meta,
+            "core_entities": core_entities,
+            "recent_appearances": recent_appearances,
+            "writing_guidance": writing_guidance,
+        }
+    )
+
+
+def _build_context_foreshadow_plan_input(chapter: int, compact: Dict[str, Any], story_spine: Dict[str, Any]) -> Dict[str, Any]:
+    if DISABLE_CONTEXT_COMPRESSION:
+        return _prune_empty(
+            {
+                "chapter": chapter,
+                "story_spine": story_spine,
+                "open_foreshadowing": compact.get("open_foreshadowing"),
+                "recent_chapter_meta": compact.get("recent_chapter_meta"),
+            }
+        )
+    compact_story_spine = _prune_empty(
+        {
+            "core_task": _truncate_text(story_spine.get("core_task"), 120),
+            "conflict": _truncate_text(story_spine.get("conflict"), 120),
+            "carry_from_previous": _truncate_text(story_spine.get("carry_from_previous"), 120),
+            "must_complete": [_truncate_text(item, 40) for item in (story_spine.get("must_complete") or [])[:3] if str(item or "").strip()],
+            "must_not": [_truncate_text(item, 40) for item in (story_spine.get("must_not") or [])[:3] if str(item or "").strip()],
+            "opening_suggestion": _truncate_text(story_spine.get("opening_suggestion"), 80),
+        }
+    )
+    compact_open_foreshadowing = []
+    for item in (compact.get("open_foreshadowing") or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        compact_open_foreshadowing.append(
+            _prune_empty(
+                {
+                    "id": _truncate_text(item.get("id"), 40),
+                    "content": _truncate_text(item.get("content"), 120),
+                    "status": _truncate_text(item.get("status"), 16),
+                    "expected_payoff": _truncate_text(item.get("expected_payoff"), 100),
+                }
+            )
+        )
+    return _prune_empty(
+        {
+            "chapter": chapter,
+            "story_spine": compact_story_spine,
+            "open_foreshadowing": compact_open_foreshadowing,
+            "recent_chapter_meta": (compact.get("recent_chapter_meta") or [])[-1:],
+        }
+    )
+
+
+def _build_context_reader_pull_input(chapter: int, compact: Dict[str, Any], story_spine: Dict[str, Any]) -> Dict[str, Any]:
+    if DISABLE_CONTEXT_COMPRESSION:
+        return _prune_empty(
+            {
+                "chapter": chapter,
+                "story_spine": story_spine,
+                "recent_reading_power": compact.get("recent_reading_power"),
+                "debt_summary": compact.get("debt_summary"),
+                "hook_type_stats": compact.get("hook_type_stats"),
+                "recent_chapter_meta": compact.get("recent_chapter_meta"),
+            }
+        )
+    compact_story_spine = _prune_empty(
+        {
+            "core_task": _truncate_text(story_spine.get("core_task"), 72),
+            "conflict": _truncate_text(story_spine.get("conflict"), 72),
+            "carry_from_previous": _truncate_text(story_spine.get("carry_from_previous"), 72),
+            "must_complete": [_truncate_text(item, 28) for item in (story_spine.get("must_complete") or [])[:2] if str(item or "").strip()],
+            "opening_suggestion": _truncate_text(story_spine.get("opening_suggestion"), 48),
+        }
+    )
+    return _prune_empty(
+        {
+            "chapter": chapter,
+            "story_spine": compact_story_spine,
+            "recent_reading_power": compact.get("recent_reading_power"),
+            "debt_summary": compact.get("debt_summary"),
+            "hook_type_stats": compact.get("hook_type_stats"),
+            "recent_chapter_meta": compact.get("recent_chapter_meta"),
+        }
+    )
+
+
+def _build_context_contract_core_input(chapter: int, story_spine: Dict[str, Any], cast_constraints: Dict[str, Any], reader_pull: Dict[str, Any]) -> Dict[str, Any]:
+    return _prune_empty(
+        {
+            "chapter": chapter,
+            "story_spine": story_spine,
+            "cast_constraints": cast_constraints,
+            "reader_pull": reader_pull,
+        }
+    )
+
+
+def _build_context_draft_package_input(
+    chapter: int,
+    compact: Dict[str, Any],
+    task_brief: Dict[str, Any],
+    contract_v2: Dict[str, Any],
+    *,
+    compact_mode: bool = False,
+) -> Dict[str, Any]:
+    if not compact_mode:
+        recent_reading_power = compact.get("recent_reading_power") or []
+        if not DISABLE_CONTEXT_COMPRESSION:
+            recent_reading_power = recent_reading_power[:1]
+        return _prune_empty(
+            {
+                "chapter": chapter,
+                "task_brief": task_brief,
+                "contract_v2": contract_v2,
+                "pattern_usage_stats": compact.get("pattern_usage_stats"),
+                "recent_reading_power": recent_reading_power,
+            }
+        )
+
+    foreshadowing_plan = task_brief.get("foreshadowing_plan") or {}
+    compact_task_brief = {
+        "core_task": _clip_context_text(task_brief.get("core_task"), 220),
+        "conflict": _clip_context_text(task_brief.get("conflict"), 220),
+        "carry_from_previous": _clip_context_text(task_brief.get("carry_from_previous"), 180),
+        "must_complete": _clip_context_list(task_brief.get("must_complete"), item_limit=6, text_limit=90),
+        "must_not": _clip_context_list(task_brief.get("must_not"), item_limit=6, text_limit=90),
+        "opening_suggestion": _clip_context_text(task_brief.get("opening_suggestion"), 180),
+        "characters": _clip_context_characters(task_brief.get("characters"), item_limit=6),
+        "scene_constraints": _clip_context_list(task_brief.get("scene_constraints"), item_limit=4, text_limit=100),
+        "time_constraints": _clip_context_list(task_brief.get("time_constraints"), item_limit=4, text_limit=100),
+        "style_guidance": _clip_context_list(task_brief.get("style_guidance"), item_limit=4, text_limit=90),
+        "foreshadowing": _clip_context_list(task_brief.get("foreshadowing"), item_limit=5, text_limit=100),
+        "foreshadowing_plan": {
+            "must_continue": _clip_context_must_continue(foreshadowing_plan.get("must_continue"), item_limit=4),
+            "planned_new": _clip_context_planned_new(foreshadowing_plan.get("planned_new"), item_limit=4),
+            "forbidden_resolve": _clip_context_list(foreshadowing_plan.get("forbidden_resolve"), item_limit=4, text_limit=90),
+        },
+        "reading_power": _clip_context_list(task_brief.get("reading_power"), item_limit=4, text_limit=100),
+        "strand_strategy": _clip_context_text(task_brief.get("strand_strategy"), 80),
     }
-    return f"""你是 webnovel-writer 的 `context-agent`，当前是 Step 1 的子阶段 2/3。
-
-目标：只生成第 {chapter} 章的 `contract_v2`。
-
-硬规则：
-- 只输出 JSON；不要解释、不要 Markdown、不要代码块
-- 顶层只能包含 `chapter` 与 `contract_v2`
-- `chapter` 必须等于 {chapter}
-- 不要重复输出 `task_brief` 或 `draft_package`
-- `contract_v2` 必须服务于已经确定的 `task_brief`，不能偏题
-
-输入（已裁剪 JSON）：
-{_compact_json_text(payload)}
-
-输出要求：
-- `contract_v2` 必须完整给出：
-  - `goal` / `obstacle` / `cost` / `change` / `unresolved_question` / `core_conflict`
-  - `opening_type` / `emotion_pacing` / `info_density` / `is_transition`
-  - `hook_type` / `hook_strength` / `micropayoffs` / `cool_point_pattern`
-- 字段必须可直接用于后续写作，不能空泛
-"""
-
-
-def _build_context_draft_package_prompt(chapter: int, compact: Dict[str, Any], task_brief: Dict[str, Any], contract_v2: Dict[str, Any]) -> str:
-    payload = {
-        "materials": _context_material_slice(
-            compact,
-            (
-                "chapter",
-                "outline",
-                "state_summary",
-                "writing_guidance",
-                "recent_chapter_meta",
-                "recent_reading_power",
-                "pattern_usage_stats",
-                "hook_type_stats",
-                "core_entities",
-                "recent_appearances",
-            ),
-        ),
-        "task_brief": task_brief,
-        "contract_v2": contract_v2,
+    compact_contract_v2 = {
+        "goal": _clip_context_text(contract_v2.get("goal"), 200),
+        "obstacle": _clip_context_text(contract_v2.get("obstacle"), 200),
+        "cost": _clip_context_text(contract_v2.get("cost"), 180),
+        "change": _clip_context_text(contract_v2.get("change"), 180),
+        "unresolved_question": _clip_context_text(contract_v2.get("unresolved_question"), 180),
+        "core_conflict": _clip_context_text(contract_v2.get("core_conflict"), 180),
+        "opening_type": _clip_context_text(contract_v2.get("opening_type"), 40),
+        "emotion_pacing": _clip_context_text(contract_v2.get("emotion_pacing"), 40),
+        "info_density": _clip_context_text(contract_v2.get("info_density"), 40),
+        "is_transition": bool(contract_v2.get("is_transition")),
+        "hook_type": _clip_context_text(contract_v2.get("hook_type"), 30),
+        "hook_strength": _clip_context_text(contract_v2.get("hook_strength"), 20),
+        "micropayoffs": _clip_context_list(contract_v2.get("micropayoffs"), item_limit=4, text_limit=90),
+        "cool_point_pattern": _clip_context_text(contract_v2.get("cool_point_pattern"), 40),
     }
-    return f"""你是 webnovel-writer 的 `context-agent`，当前是 Step 1 的子阶段 3/3。
+    return _prune_empty(
+        {
+            "chapter": chapter,
+            "task_brief": compact_task_brief,
+            "contract_v2": compact_contract_v2,
+            "pattern_usage_stats": compact.get("pattern_usage_stats"),
+            "recent_reading_power": (compact.get("recent_reading_power") or [])[:1],
+        }
+    )
 
-目标：只生成第 {chapter} 章的 `draft_package`。
 
-硬规则：
-- 只输出 JSON；不要解释、不要 Markdown、不要代码块
-- 顶层只能包含 `chapter` 与 `draft_package`
-- `chapter` 必须等于 {chapter}
-- 不要重复输出 `task_brief` 或 `contract_v2`
-- `draft_package` 必须能直接给 `writer-draft` 开写
+def _context_budget_breakdown(payload: Dict[str, Any]) -> Dict[str, int]:
+    sizes: Dict[str, int] = {}
+    for key, value in payload.items():
+        if key == "chapter":
+            continue
+        sizes[key] = _json_size_bytes(value)
+    return sizes
 
-输入（已裁剪 JSON）：
+
+def _assert_context_input_budget(stage_name: str, payload: Dict[str, Any]) -> None:
+    budget = CONTEXT_STAGE_INPUT_BUDGETS.get(stage_name)
+    if budget is None:
+        return
+    input_bytes = _json_size_bytes(payload)
+    if input_bytes <= budget:
+        return
+    breakdown = ", ".join(f"{key}={size}" for key, size in sorted(_context_budget_breakdown(payload).items(), key=lambda item: item[1], reverse=True))
+    if not ENFORCE_CONTEXT_STAGE_INPUT_BUDGET:
+        _emit_tui_line(f"{stage_name} input 超预算告警: {input_bytes} bytes > {budget} bytes ({breakdown})")
+        return
+    raise RuntimeError(f"{stage_name} input 超预算: {input_bytes} bytes > {budget} bytes ({breakdown})")
+
+
+def observe_context_stage_metric(
+    project_root: Path,
+    stage: str,
+    *,
+    chapter: int,
+    input_bytes: int,
+    schema_bytes: int,
+    prompt_bytes: int,
+    success: bool,
+    attempt: int | None = None,
+    elapsed_ms: int | None = None,
+    error: str | None = None,
+    output_bytes: int | None = None,
+) -> None:
+    append_jsonl(
+        project_root / OBSERVABILITY_CONTEXT_REL,
+        {
+            "timestamp": now_iso(),
+            "chapter": chapter,
+            "stage": stage,
+            "input_bytes": input_bytes,
+            "schema_bytes": schema_bytes,
+            "prompt_bytes": prompt_bytes,
+            "success": success,
+            "attempt": attempt,
+            "elapsed_ms": elapsed_ms,
+            "error": _trim_progress_note(error or "", limit=240) if error else None,
+            "output_bytes": output_bytes,
+        },
+    )
+
+
+def _build_context_story_spine_prompt(chapter: int, payload: Dict[str, Any]) -> str:
+    return f"""你是 webnovel-writer 的 context-agent，当前是 Step 1 子阶段 1/6。
+只输出 JSON，顶层只能有 chapter 与 story_spine，chapter 必须等于 {chapter}。
+任务：先定死这一章的主轴，不处理人物细节、伏笔细化和追读力。
+优先级：大纲与设定 > 近期摘要 > 其他信号。
+输入(JSON)：
 {_compact_json_text(payload)}
+story_spine 必须包含 core_task, conflict, carry_from_previous, must_complete, must_not, opening_suggestion。"""
 
-输出要求：
-- `draft_package` 必须完整给出：
-  - `title_suggestion`
-  - `beat_sheet`
-  - `immutable_facts`
-  - `forbidden`
-  - `checklist`
-  - `target_words`
-- `target_words` 不得小于 1200
-- `beat_sheet` 要覆盖开场、推进、兑现/阻力、章末钩
-"""
+
+def _build_context_cast_constraints_prompt(chapter: int, payload: Dict[str, Any]) -> str:
+    return f"""你是 webnovel-writer 的 context-agent，当前是 Step 1 子阶段 2/6。
+只输出 JSON，顶层只能有 chapter 与 cast_constraints，chapter 必须等于 {chapter}。
+任务：基于既定 story_spine，给出本章可上场角色、场景限制、时间限制、风格提醒。不要重写主任务，不要设计新伏笔。
+输入(JSON)：
+{_compact_json_text(payload)}
+cast_constraints 必须包含 characters、scene_constraints、time_constraints、style_guidance；后两者可为空数组。"""
+
+
+def _build_context_foreshadow_plan_prompt(chapter: int, payload: Dict[str, Any]) -> str:
+    return f"""你是 webnovel-writer 的 context-agent，当前是 Step 1 子阶段 3/6。
+只输出 JSON，顶层只能有 chapter 与 foreshadow_plan，chapter 必须等于 {chapter}。
+任务：只做伏笔设计。伏笔不是事后总结，必须先设计再写。
+输入(JSON)：
+{_compact_json_text(payload)}
+foreshadow_plan 必须包含 foreshadowing 与 foreshadowing_plan。foreshadowing 为字符串数组。
+foreshadowing_plan 必须给出 must_continue, planned_new, forbidden_resolve。
+must_continue 的每个元素必须包含 id/content/purpose，id 只能引用输入里的 open_foreshadowing。
+planned_new 的每个元素必须包含 content/plant_method/purpose/expected_payoff。"""
+
+
+def _build_context_reader_pull_prompt(chapter: int, payload: Dict[str, Any]) -> str:
+    return f"""你是 webnovel-writer 的 context-agent，当前是 Step 1 子阶段 4/6。
+只输出 JSON，顶层只能有 chapter 与 reader_pull，chapter 必须等于 {chapter}。
+任务：只判断本章的追读设计与 strand 节奏，不要重写主线和伏笔。
+输入(JSON)：
+{_compact_json_text(payload)}
+reader_pull 必须包含 reading_power, strand_strategy, is_transition, hook_type, hook_strength, micropayoffs, cool_point_pattern。"""
+
+
+def _build_context_contract_core_prompt(chapter: int, payload: Dict[str, Any]) -> str:
+    return f"""你是 webnovel-writer 的 context-agent，当前是 Step 1 子阶段 5/6。
+只输出 JSON，顶层只能有 chapter 与 contract_core，chapter 必须等于 {chapter}。
+任务：在既定主轴、角色约束、追读策略上，补完整章写作 contract 的核心。
+输入(JSON)：
+{_compact_json_text(payload)}
+contract_core 必须包含 goal, obstacle, cost, change, unresolved_question, core_conflict, opening_type, emotion_pacing, info_density。"""
+
+
+def _build_context_draft_package_prompt(chapter: int, payload: Dict[str, Any]) -> str:
+    return f"""你是 webnovel-writer 的 context-agent，当前是 Step 1 子阶段 6/6。
+只输出 JSON，顶层只能有 chapter 与 draft_package，chapter 必须等于 {chapter}。
+任务：把已经确定的 task_brief 与 contract_v2 转成可直接给 writer-draft 开写的 draft_package。不要回头改 task_brief 或 contract_v2。
+输入(JSON)：
+{_compact_json_text(payload)}
+draft_package 必须包含 title_suggestion, beat_sheet, immutable_facts, forbidden, checklist, target_words；target_words 不得小于 1200。
+所有字符串都用单行短句，不要复制大段原文，不要出现“...(已截断)”字样。"""
 
 
 def _extract_context_segment(payload: Dict[str, Any], *, chapter: int, key: str, stage_name: str) -> Dict[str, Any]:
-    payload_chapter = int(payload.get("chapter") or 0)
-    if payload_chapter != int(chapter):
-        raise RuntimeError(f"{stage_name} 返回 chapter={payload_chapter}，与目标章节 {chapter} 不一致")
-    segment = payload.get(key)
-    if not isinstance(segment, dict):
+    if int(payload.get("chapter") or 0) != chapter:
+        raise RuntimeError(f"{stage_name} chapter 不匹配: {payload.get('chapter')} != {chapter}")
+    value = payload.get(key)
+    if not isinstance(value, dict):
         raise RuntimeError(f"{stage_name} 缺少 {key} 对象")
-    return segment
+    return value
+
+
+def _merge_context_segments(
+    *,
+    chapter: int,
+    story_spine: Dict[str, Any],
+    cast_constraints: Dict[str, Any],
+    foreshadow_plan: Dict[str, Any],
+    reader_pull: Dict[str, Any],
+    contract_core: Dict[str, Any],
+    draft_package: Dict[str, Any],
+) -> Dict[str, Any]:
+    task_brief = {
+        **story_spine,
+        **cast_constraints,
+        **foreshadow_plan,
+        "reading_power": reader_pull.get("reading_power") or [],
+        "strand_strategy": reader_pull.get("strand_strategy") or "",
+    }
+    contract_v2 = {
+        **contract_core,
+        "is_transition": bool(reader_pull.get("is_transition")),
+        "hook_type": str(reader_pull.get("hook_type") or ""),
+        "hook_strength": str(reader_pull.get("hook_strength") or ""),
+        "micropayoffs": list(reader_pull.get("micropayoffs") or []),
+        "cool_point_pattern": str(reader_pull.get("cool_point_pattern") or ""),
+    }
+    return {
+        "chapter": chapter,
+        "task_brief": task_brief,
+        "contract_v2": contract_v2,
+        "draft_package": draft_package,
+    }
+
+
+def _build_context_draft_package_fallback(chapter: int, task_brief: Dict[str, Any], contract_v2: Dict[str, Any]) -> Dict[str, Any]:
+    if DISABLE_CONTEXT_COMPRESSION:
+        core_task_raw = str(task_brief.get("core_task") or "").strip()
+        conflict_raw = str(task_brief.get("conflict") or "").strip()
+        carry_raw = str(task_brief.get("carry_from_previous") or "").strip()
+        opening_raw = str(task_brief.get("opening_suggestion") or "").strip()
+        must_complete_raw = [str(item).strip() for item in (task_brief.get("must_complete") or []) if str(item).strip()]
+        must_not_raw = [str(item).strip() for item in (task_brief.get("must_not") or []) if str(item).strip()]
+        time_constraints_raw = [str(item).strip() for item in (task_brief.get("time_constraints") or []) if str(item).strip()]
+        scene_constraints_raw = [str(item).strip() for item in (task_brief.get("scene_constraints") or []) if str(item).strip()]
+        reading_power_raw = [str(item).strip() for item in (task_brief.get("reading_power") or []) if str(item).strip()]
+        hook_type_raw = str(contract_v2.get("hook_type") or "").strip() or "危机钩"
+        hook_strength_raw = str(contract_v2.get("hook_strength") or "").strip() or "中"
+        unresolved_raw = str(contract_v2.get("unresolved_question") or "").strip()
+        goal_raw = str(contract_v2.get("goal") or "").strip()
+        obstacle_raw = str(contract_v2.get("obstacle") or "").strip()
+        change_raw = str(contract_v2.get("change") or "").strip()
+        micropayoffs_raw = [str(item).strip() for item in (contract_v2.get("micropayoffs") or []) if str(item).strip()]
+        title_suggestion_raw = core_task_raw or goal_raw or f"第{chapter}章推进"
+        beat_sheet_raw = [
+            f"开场：{opening_raw or '冲突直切开场'}，承接{carry_raw or '上一章压力'}。",
+            f"目标锁定：{goal_raw or core_task_raw or '明确本章主任务'}。",
+            f"第一推进：围绕“{conflict_raw or obstacle_raw or '核心冲突'}”展开现场博弈。",
+            "中段翻盘：把文本信息转成可验证事实，形成读者可感知的小兑现。",
+            f"结果落点：{change_raw or '主角获得阶段性主动权'}。",
+            f"章末钩子：{unresolved_raw or f'{hook_type_raw}（{hook_strength_raw}）'}",
+        ]
+        immutable_facts_raw = [
+            f"章号固定：第{chapter}章。",
+            f"核心任务：{core_task_raw or goal_raw or '完成主线推进'}。",
+            f"核心冲突：{conflict_raw or obstacle_raw or '主角与对手正面冲突'}。",
+        ]
+        immutable_facts_raw.extend([f"时间限制：{item}" for item in time_constraints_raw])
+        immutable_facts_raw.extend([f"场景限制：{item}" for item in scene_constraints_raw])
+        immutable_facts_raw.extend([f"微兑现：{item}" for item in micropayoffs_raw])
+        forbidden_raw = must_not_raw or ["禁止脱离本章主线去展开大支线。", "禁止无代价秒赢。"]
+        checklist_raw = must_complete_raw + [f"追读点：{item}" for item in reading_power_raw]
+        checklist_raw.append(f"章末钩子类型：{hook_type_raw}（强度：{hook_strength_raw}）")
+        return {
+            "title_suggestion": title_suggestion_raw,
+            "beat_sheet": [item for item in beat_sheet_raw if str(item).strip()],
+            "immutable_facts": [item for item in immutable_facts_raw if str(item).strip()],
+            "forbidden": [item for item in forbidden_raw if str(item).strip()],
+            "checklist": [item for item in checklist_raw if str(item).strip()],
+            "target_words": 2200,
+        }
+
+    core_task = _clip_context_text(task_brief.get("core_task"), 96)
+    conflict = _clip_context_text(task_brief.get("conflict"), 120)
+    carry = _as_sentence_fragment(task_brief.get("carry_from_previous"), limit=80)
+    opening = _as_sentence_fragment(task_brief.get("opening_suggestion"), limit=70)
+    must_complete = _clip_context_list(task_brief.get("must_complete"), item_limit=8, text_limit=90)
+    must_not = _clip_context_list(task_brief.get("must_not"), item_limit=8, text_limit=90)
+    time_constraints = _clip_context_list(task_brief.get("time_constraints"), item_limit=4, text_limit=90)
+    scene_constraints = _clip_context_list(task_brief.get("scene_constraints"), item_limit=4, text_limit=90)
+    reading_power = _clip_context_list(task_brief.get("reading_power"), item_limit=4, text_limit=90)
+    hook_type = _clip_context_text(contract_v2.get("hook_type"), 24) or "危机钩"
+    hook_strength = _clip_context_text(contract_v2.get("hook_strength"), 16) or "中"
+    unresolved = _clip_context_text(contract_v2.get("unresolved_question"), 100)
+    goal = _clip_context_text(contract_v2.get("goal"), 100)
+    obstacle = _clip_context_text(contract_v2.get("obstacle"), 100)
+    change = _clip_context_text(contract_v2.get("change"), 100)
+    micropayoffs = _clip_context_list(contract_v2.get("micropayoffs"), item_limit=4, text_limit=90)
+    core_task_fragment = _as_sentence_fragment(core_task or goal or "完成主线推进", limit=100) or "完成主线推进"
+    conflict_fragment = _as_sentence_fragment(conflict or obstacle or "主角与对手正面冲突", limit=100) or "主角与对手正面冲突"
+
+    title_seed = _clip_context_text(core_task or goal or f"第{chapter}章推进", 20).replace("：", "").replace(":", "")
+    title_suggestion = title_seed or f"第{chapter}章推进"
+
+    beat_sheet = [
+        f"开场：{opening or '冲突直切开场'}，承接{carry or '上一章压力'}。",
+        f"目标锁定：{_as_sentence_fragment(goal or core_task or '明确本章主任务', limit=90)}。",
+        f"第一推进：围绕“{_as_sentence_fragment(conflict or obstacle or '核心冲突', limit=32)}”展开现场博弈。",
+        "中段翻盘：把文本信息转成可验证事实，形成读者可感知的小兑现。",
+        f"结果落点：{_as_sentence_fragment(change or '主角获得阶段性主动权', limit=90)}。",
+        f"章末钩子：{unresolved or f'{hook_type}（{hook_strength}）'}",
+    ]
+
+    immutable_facts = [
+        f"章号固定：第{chapter}章。",
+        f"核心任务：{core_task_fragment}。",
+        f"核心冲突：{conflict_fragment}。",
+    ]
+    immutable_facts.extend([f"时间限制：{_as_sentence_fragment(item, limit=100) or item}" for item in time_constraints[:2]])
+    immutable_facts.extend([f"场景限制：{_as_sentence_fragment(item, limit=100) or item}" for item in scene_constraints[:2]])
+    immutable_facts.extend([f"微兑现：{_as_sentence_fragment(item, limit=100) or item}" for item in micropayoffs[:2]])
+
+    forbidden = must_not[:6]
+    if not forbidden:
+        forbidden = ["禁止脱离本章主线去展开大支线。", "禁止无代价秒赢。"]
+
+    checklist = must_complete[:8]
+    checklist.extend([f"追读点：{item}" for item in reading_power[:2]])
+    checklist.append(f"章末钩子类型：{hook_type}（强度：{hook_strength}）")
+    checklist = [item for item in checklist if item.strip()]
+
+    return {
+        "title_suggestion": title_suggestion,
+        "beat_sheet": beat_sheet[:8],
+        "immutable_facts": immutable_facts[:10],
+        "forbidden": forbidden[:8],
+        "checklist": checklist[:10],
+        "target_words": 2200,
+    }
+
+
+def _validate_context_segments(chapter: int, compact: Dict[str, Any], context_package: Dict[str, Any]) -> None:
+    task_brief = context_package.get("task_brief") or {}
+    contract_v2 = context_package.get("contract_v2") or {}
+    draft_package = context_package.get("draft_package") or {}
+    open_ids = {str(item.get("id") or "").strip() for item in compact.get("open_foreshadowing") or [] if str(item.get("id") or "").strip()}
+    must_continue = (task_brief.get("foreshadowing_plan") or {}).get("must_continue") or []
+    forbidden_resolve = set(str(item or "").strip() for item in ((task_brief.get("foreshadowing_plan") or {}).get("forbidden_resolve") or []) if str(item or "").strip())
+    continued_ids = set()
+    continued_contents = set()
+    for item in must_continue:
+        item_id = str(item.get("id") or "").strip()
+        if item_id and open_ids and item_id not in open_ids:
+            raise RuntimeError(f"context_foreshadow_plan 引用了不存在的伏笔 id: {item_id}")
+        if item_id:
+            continued_ids.add(item_id)
+        content = str(item.get("content") or "").strip()
+        if content:
+            continued_contents.add(content)
+    if forbidden_resolve & continued_ids:
+        raise RuntimeError("foreshadowing_plan 的 forbidden_resolve 与 must_continue 冲突")
+    if forbidden_resolve & continued_contents:
+        raise RuntimeError("foreshadowing_plan 的 forbidden_resolve 与 must_continue.content 冲突")
+    characters = task_brief.get("characters") or []
+    if len(characters) > 8:
+        raise RuntimeError(f"context_cast_constraints 角色数过多: {len(characters)} > 8")
+    target_words = int(draft_package.get("target_words") or 0)
+    if target_words < 1200 or target_words > 3200:
+        raise RuntimeError(f"draft_package.target_words 超出允许范围: {target_words}")
+    if compact.get("timeline_anchor_digest") and not (task_brief.get("time_constraints") or []):
+        raise RuntimeError("context_cast_constraints 缺少 time_constraints，未接住时间锚点")
+    if not (contract_v2.get("micropayoffs") or []):
+        raise RuntimeError("context_reader_pull / contract_v2 缺少 micropayoffs")
+    if int(context_package.get("chapter") or 0) != chapter:
+        raise RuntimeError(f"context package chapter 不匹配: {context_package.get('chapter')} != {chapter}")
+
+
+def _normalize_context_foreshadowing_plan(context_package: Dict[str, Any]) -> Dict[str, int]:
+    task_brief = context_package.get("task_brief") or {}
+    plan = task_brief.get("foreshadowing_plan")
+    if not isinstance(plan, dict):
+        return {"removed_conflicts": 0}
+    must_continue = plan.get("must_continue")
+    forbidden_resolve = plan.get("forbidden_resolve")
+    if not isinstance(must_continue, list) or not isinstance(forbidden_resolve, list):
+        return {"removed_conflicts": 0}
+
+    continued_ids = set()
+    continued_contents = set()
+    for item in must_continue:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if item_id:
+            continued_ids.add(item_id)
+        if content:
+            continued_contents.add(content)
+
+    removed = 0
+    filtered: List[str] = []
+    for raw in forbidden_resolve:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text in continued_ids or text in continued_contents:
+            removed += 1
+            continue
+        if text in filtered:
+            continue
+        filtered.append(text)
+
+    if removed:
+        plan["forbidden_resolve"] = filtered
+    return {"removed_conflicts": removed}
+
+
+def _read_json_object(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_cached_context_package(
+    *,
+    chapter: int,
+    compact: Dict[str, Any],
+    artifact_dir: Path,
+    allow_reuse: bool,
+) -> Optional[tuple[Dict[str, Any], Path]]:
+    if not allow_reuse:
+        return None
+    for path in (
+        artifact_dir / "context_package.json",
+        artifact_dir / "context_agent.json",
+        artifact_dir / "context_agent.result.json",
+    ):
+        payload = _read_json_object(path)
+        if not payload:
+            continue
+        required = {"chapter", "task_brief", "contract_v2", "draft_package"}
+        if not required.issubset(payload.keys()):
+            continue
+        try:
+            _validate_context_segments(chapter, compact, payload)
+            _assert_payload_matches_schema(payload, _build_stage_schema_context())
+        except Exception:
+            continue
+        return payload, path
+    return None
+
+
+def _run_context_segment(
+    *,
+    project_root: Path,
+    chapter: int,
+    stage_name: str,
+    input_payload: Dict[str, Any],
+    schema: Dict[str, Any],
+    prompt_builder,
+    artifact_dir: Path,
+    codex_bin: Optional[str],
+    key: str,
+) -> Dict[str, Any]:
+    _assert_context_input_budget(stage_name, input_payload)
+    input_path = artifact_dir / f"{stage_name}.input.json"
+    previous_input_payload = _read_json_object(input_path)
+    write_json(input_path, input_payload)
+    prompt = prompt_builder(chapter, input_payload)
+    prompt_path = artifact_dir / f"{stage_name}.prompt.txt"
+    prompt_path.write_text(prompt, encoding="utf-8")
+    stage_output_path = artifact_dir / f"{stage_name}.json"
+    if previous_input_payload == input_payload:
+        cached_payload = _read_json_object(stage_output_path)
+        if cached_payload:
+            try:
+                cached_segment = _extract_context_segment(
+                    cached_payload,
+                    chapter=chapter,
+                    key=key,
+                    stage_name=stage_name,
+                )
+            except Exception:
+                cached_segment = None
+            if cached_segment is not None:
+                display_name = _stage_display_name(stage_name)
+                try:
+                    update_step(project_root, "Step 1", note=f"{display_name} · 复用缓存")
+                except Exception:
+                    pass
+                _emit_tui_line(f"{display_name} · 复用缓存")
+                observe_write_event(
+                    project_root,
+                    stage_name,
+                    attempt=0,
+                    channel="workflow",
+                    event="cache.hit",
+                    message=f"{display_name} 命中缓存",
+                )
+                observe_context_stage_metric(
+                    project_root,
+                    stage_name,
+                    chapter=chapter,
+                    input_bytes=_json_size_bytes(input_payload),
+                    schema_bytes=_json_size_bytes(schema),
+                    prompt_bytes=len(prompt.encode("utf-8")),
+                    success=True,
+                    attempt=0,
+                    elapsed_ms=0,
+                    output_bytes=stage_output_path.stat().st_size if stage_output_path.is_file() else None,
+                )
+                return cached_segment
+    payload = None
+    error_text: Optional[str] = None
+    try:
+        payload = run_codex_json_stage(
+            stage_name=stage_name,
+            prompt=prompt,
+            schema=schema,
+            project_root=project_root,
+            artifact_dir=artifact_dir,
+            codex_bin=codex_bin,
+            timeout_seconds=DEFAULT_CONTEXT_STAGE_TIMEOUT_SECONDS,
+            retries=DEFAULT_CONTEXT_STAGE_RETRIES,
+        )
+        return _extract_context_segment(payload, chapter=chapter, key=key, stage_name=stage_name)
+    except Exception as exc:
+        error_text = str(exc)
+        raise
+    finally:
+        execution_path = artifact_dir / f"{stage_name}.execution.json"
+        execution_payload = {}
+        if execution_path.is_file():
+            try:
+                execution_payload = json.loads(execution_path.read_text(encoding="utf-8"))
+            except Exception:
+                execution_payload = {}
+        observe_context_stage_metric(
+            project_root,
+            stage_name,
+            chapter=chapter,
+            input_bytes=_json_size_bytes(input_payload),
+            schema_bytes=_json_size_bytes(schema),
+            prompt_bytes=prompt_path.stat().st_size if prompt_path.is_file() else len(prompt.encode("utf-8")),
+            success=error_text is None,
+            attempt=execution_payload.get("attempt") if isinstance(execution_payload, dict) else None,
+            elapsed_ms=execution_payload.get("elapsed_ms") if isinstance(execution_payload, dict) else None,
+            error=error_text or (execution_payload.get("error") if isinstance(execution_payload, dict) else None),
+            output_bytes=stage_output_path.stat().st_size if stage_output_path.is_file() else None,
+        )
+
+
+def run_context_agent_stage(
+    *,
+    project_root: Path,
+    chapter: int,
+    materials: Dict[str, Any],
+    artifact_dir: Path,
+    codex_bin: Optional[str] = None,
+) -> Dict[str, Any]:
+    compact = _compact_context_materials(materials, chapter)
+    compact_path = artifact_dir / "context.compact.json"
+    previous_compact = _read_json_object(compact_path)
+    write_json(compact_path, compact)
+    compact_unchanged = previous_compact == compact
+    context_package: Optional[Dict[str, Any]] = None
+    try:
+        cached_package = _load_cached_context_package(
+            chapter=chapter,
+            compact=compact,
+            artifact_dir=artifact_dir,
+            allow_reuse=bool(compact_unchanged),
+        )
+        if cached_package is not None:
+            context_package, cached_path = cached_package
+            _emit_tui_line(f"Context Agent · 复用缓存包: {cached_path.name}")
+            observe_write_event(
+                project_root,
+                "context_agent",
+                attempt=0,
+                channel="workflow",
+                event="cache.hit",
+                message=f"Context Agent 命中缓存包: {cached_path.name}",
+            )
+            observe_context_stage_metric(
+                project_root,
+                "context_agent",
+                chapter=chapter,
+                input_bytes=_json_size_bytes(compact),
+                schema_bytes=_json_size_bytes(_build_stage_schema_context()),
+                prompt_bytes=0,
+                success=True,
+                attempt=0,
+                elapsed_ms=0,
+                output_bytes=(artifact_dir / "context_package.json").stat().st_size if (artifact_dir / "context_package.json").is_file() else None,
+            )
+            return context_package
+        story_spine = _run_context_segment(
+            project_root=project_root,
+            chapter=chapter,
+            stage_name="context_story_spine",
+            input_payload=_build_context_story_spine_input(chapter, compact),
+            schema=_build_stage_schema_context_story_spine(),
+            prompt_builder=_build_context_story_spine_prompt,
+            artifact_dir=artifact_dir,
+            codex_bin=codex_bin,
+            key="story_spine",
+        )
+        cast_constraints = _run_context_segment(
+            project_root=project_root,
+            chapter=chapter,
+            stage_name="context_cast_constraints",
+            input_payload=_build_context_cast_constraints_input(chapter, compact, story_spine),
+            schema=_build_stage_schema_context_cast_constraints(),
+            prompt_builder=_build_context_cast_constraints_prompt,
+            artifact_dir=artifact_dir,
+            codex_bin=codex_bin,
+            key="cast_constraints",
+        )
+        foreshadow_plan = _run_context_segment(
+            project_root=project_root,
+            chapter=chapter,
+            stage_name="context_foreshadow_plan",
+            input_payload=_build_context_foreshadow_plan_input(chapter, compact, story_spine),
+            schema=_build_stage_schema_context_foreshadow_plan(),
+            prompt_builder=_build_context_foreshadow_plan_prompt,
+            artifact_dir=artifact_dir,
+            codex_bin=codex_bin,
+            key="foreshadow_plan",
+        )
+        reader_pull = _run_context_segment(
+            project_root=project_root,
+            chapter=chapter,
+            stage_name="context_reader_pull",
+            input_payload=_build_context_reader_pull_input(chapter, compact, story_spine),
+            schema=_build_stage_schema_context_reader_pull(),
+            prompt_builder=_build_context_reader_pull_prompt,
+            artifact_dir=artifact_dir,
+            codex_bin=codex_bin,
+            key="reader_pull",
+        )
+        contract_core = _run_context_segment(
+            project_root=project_root,
+            chapter=chapter,
+            stage_name="context_contract_core",
+            input_payload=_build_context_contract_core_input(chapter, story_spine, cast_constraints, reader_pull),
+            schema=_build_stage_schema_context_contract_core(),
+            prompt_builder=_build_context_contract_core_prompt,
+            artifact_dir=artifact_dir,
+            codex_bin=codex_bin,
+            key="contract_core",
+        )
+        merged_without_draft = _merge_context_segments(
+            chapter=chapter,
+            story_spine=story_spine,
+            cast_constraints=cast_constraints,
+            foreshadow_plan=foreshadow_plan,
+            reader_pull=reader_pull,
+            contract_core=contract_core,
+            draft_package={},
+        )
+        draft_input_payload = _build_context_draft_package_input(
+            chapter,
+            compact,
+            merged_without_draft["task_brief"],
+            merged_without_draft["contract_v2"],
+        )
+        write_json(artifact_dir / "context_draft_package.input.raw.json", draft_input_payload)
+        if USE_MAIN_PROCESS_CONTEXT_DRAFT_PACKAGE:
+            draft_prompt = _build_context_draft_package_prompt(chapter, draft_input_payload)
+            strict_schema = _build_stage_schema_context_draft_package()
+            write_json(artifact_dir / "context_draft_package.input.json", draft_input_payload)
+            write_json(artifact_dir / "context_draft_package.schema.json", strict_schema)
+            (artifact_dir / "context_draft_package.prompt.txt").write_text(draft_prompt, encoding="utf-8")
+            started_at = time.time()
+            draft_package = _build_context_draft_package_fallback(
+                chapter,
+                merged_without_draft["task_brief"],
+                merged_without_draft["contract_v2"],
+            )
+            fallback_payload = {"chapter": chapter, "draft_package": draft_package}
+            _assert_payload_matches_schema(fallback_payload, strict_schema)
+            write_json(artifact_dir / "context_draft_package.json", fallback_payload)
+            elapsed_ms = int((time.time() - started_at) * 1000)
+            trace_summary = {
+                "tool_counts": {
+                    "read": 0,
+                    "write": 0,
+                    "bash": 0,
+                    "assistant_message": 0,
+                    "event": 0,
+                },
+                "workspace_reads": 0,
+                "workspace_writes": 0,
+                "events_captured": 0,
+                "tools_seen": [],
+            }
+            (artifact_dir / "context_draft_package.stdout.log").write_text(
+                "Context Agent / Draft Package main-process mode enabled; generated locally.\n",
+                encoding="utf-8",
+            )
+            (artifact_dir / "context_draft_package.stderr.log").write_text("", encoding="utf-8")
+            write_json(
+                artifact_dir / "context_draft_package.trace.json",
+                {
+                    "stage": "context_draft_package",
+                    "events": [],
+                    "summary": trace_summary,
+                    "source": "main_process",
+                },
+            )
+            write_json(
+                artifact_dir / "context_draft_package.execution.json",
+                {
+                    "stage": "context_draft_package",
+                    "chapter": chapter,
+                    "attempt": 0,
+                    "success": True,
+                    "source": "main_process",
+                    "elapsed_ms": elapsed_ms,
+                    "return_code": 0,
+                    "turn_completed": True,
+                    "sandbox_mode": "main-process",
+                    "trace_summary": trace_summary,
+                },
+            )
+            _emit_tui_line("Context Agent / Draft Package · 主进程生成完成")
+            observe_write_event(
+                project_root,
+                "context_draft_package",
+                attempt=0,
+                channel="workflow",
+                event="main_process.local",
+                message="Context Agent / Draft Package generated in main process",
+            )
+            observe_context_stage_metric(
+                project_root,
+                "context_draft_package",
+                chapter=chapter,
+                input_bytes=_json_size_bytes(draft_input_payload),
+                schema_bytes=_json_size_bytes(strict_schema),
+                prompt_bytes=len(draft_prompt.encode("utf-8")),
+                success=True,
+                attempt=0,
+                elapsed_ms=elapsed_ms,
+                output_bytes=(artifact_dir / "context_draft_package.json").stat().st_size,
+            )
+        else:
+            try:
+                draft_package = _run_context_segment(
+                    project_root=project_root,
+                    chapter=chapter,
+                    stage_name="context_draft_package",
+                    input_payload=draft_input_payload,
+                    schema=_build_stage_schema_context_draft_package_wire(),
+                    prompt_builder=_build_context_draft_package_prompt,
+                    artifact_dir=artifact_dir,
+                    codex_bin=codex_bin,
+                    key="draft_package",
+                )
+            except Exception as exc:
+                if not _is_retryable_provider_error(str(exc)):
+                    raise
+                retry_error = exc
+                if ENABLE_CONTEXT_DRAFT_COMPACT_RETRY and not DISABLE_CONTEXT_COMPRESSION:
+                    compact_retry_payload = _build_context_draft_package_input(
+                        chapter,
+                        compact,
+                        merged_without_draft["task_brief"],
+                        merged_without_draft["contract_v2"],
+                        compact_mode=True,
+                    )
+                    write_json(artifact_dir / "context_draft_package.input.compact.json", compact_retry_payload)
+                    compact_bytes = _json_size_bytes(compact_retry_payload)
+                    raw_bytes = _json_size_bytes(draft_input_payload)
+                    if compact_bytes < raw_bytes:
+                        _emit_tui_line(
+                            f"Context Agent / Draft Package · provider 异常，切换紧凑输入重试（{raw_bytes} -> {compact_bytes} bytes）"
+                        )
+                        observe_write_event(
+                            project_root,
+                            "context_draft_package",
+                            attempt=0,
+                            channel="workflow",
+                            event="retry.compact_input",
+                            message=f"Context Agent / Draft Package compact retry {raw_bytes}->{compact_bytes} bytes",
+                        )
+                        try:
+                            draft_package = _run_context_segment(
+                                project_root=project_root,
+                                chapter=chapter,
+                                stage_name="context_draft_package",
+                                input_payload=compact_retry_payload,
+                                schema=_build_stage_schema_context_draft_package_wire(),
+                                prompt_builder=_build_context_draft_package_prompt,
+                                artifact_dir=artifact_dir,
+                                codex_bin=codex_bin,
+                                key="draft_package",
+                            )
+                            retry_error = None
+                        except Exception as compact_exc:
+                            if not _is_retryable_provider_error(str(compact_exc)):
+                                raise
+                            retry_error = compact_exc
+                if retry_error is None:
+                    pass
+                else:
+                    draft_package = _build_context_draft_package_fallback(
+                        chapter,
+                        merged_without_draft["task_brief"],
+                        merged_without_draft["contract_v2"],
+                    )
+                    fallback_payload = {"chapter": chapter, "draft_package": draft_package}
+                    _assert_payload_matches_schema(fallback_payload, _build_stage_schema_context_draft_package())
+                    write_json(artifact_dir / "context_draft_package.json", fallback_payload)
+                    write_json(
+                        artifact_dir / "context_draft_package.fallback.json",
+                        {
+                            "chapter": chapter,
+                            "reason": str(retry_error),
+                            "input_bytes": _json_size_bytes(draft_input_payload),
+                            "source": "local_fallback",
+                        },
+                    )
+                    _emit_tui_line("Context Agent / Draft Package · provider 异常，已切换本地 fallback")
+                    observe_write_event(
+                        project_root,
+                        "context_draft_package",
+                        attempt=0,
+                        channel="workflow",
+                        event="fallback.local",
+                        message=f"Context Agent / Draft Package fallback: {_trim_progress_note(str(retry_error), limit=180)}",
+                    )
+                    observe_context_stage_metric(
+                        project_root,
+                        "context_draft_package",
+                        chapter=chapter,
+                        input_bytes=_json_size_bytes(draft_input_payload),
+                        schema_bytes=_json_size_bytes(_build_stage_schema_context_draft_package()),
+                        prompt_bytes=len(_build_context_draft_package_prompt(chapter, draft_input_payload).encode("utf-8")),
+                        success=True,
+                        attempt=0,
+                        elapsed_ms=0,
+                        error="provider_retryable_fallback",
+                        output_bytes=(artifact_dir / "context_draft_package.json").stat().st_size,
+                    )
+        try:
+            _assert_payload_matches_schema(
+                {"chapter": chapter, "draft_package": draft_package},
+                _build_stage_schema_context_draft_package(),
+            )
+        except Exception as shape_exc:
+            draft_package = _build_context_draft_package_fallback(
+                chapter,
+                merged_without_draft["task_brief"],
+                merged_without_draft["contract_v2"],
+            )
+            fallback_payload = {"chapter": chapter, "draft_package": draft_package}
+            _assert_payload_matches_schema(fallback_payload, _build_stage_schema_context_draft_package())
+            write_json(artifact_dir / "context_draft_package.json", fallback_payload)
+            write_json(
+                artifact_dir / "context_draft_package.fallback.json",
+                {
+                    "chapter": chapter,
+                    "reason": f"invalid_draft_package_shape: {shape_exc}",
+                    "input_bytes": _json_size_bytes(draft_input_payload),
+                    "source": "local_fallback_invalid_output",
+                },
+            )
+            _emit_tui_line("Context Agent / Draft Package · 输出字段不完整，已切换本地 fallback")
+            observe_write_event(
+                project_root,
+                "context_draft_package",
+                attempt=0,
+                channel="workflow",
+                event="fallback.invalid_output",
+                message=f"Context Agent / Draft Package invalid output fallback: {_trim_progress_note(str(shape_exc), limit=180)}",
+            )
+        context_package = _merge_context_segments(
+            chapter=chapter,
+            story_spine=story_spine,
+            cast_constraints=cast_constraints,
+            foreshadow_plan=foreshadow_plan,
+            reader_pull=reader_pull,
+            contract_core=contract_core,
+            draft_package=draft_package,
+        )
+        normalization = _normalize_context_foreshadowing_plan(context_package)
+        removed_conflicts = int(normalization.get("removed_conflicts") or 0)
+        if removed_conflicts > 0:
+            _emit_tui_line(f"Context Agent · 自动修复 foreshadowing 冲突 {removed_conflicts} 项")
+            observe_write_event(
+                project_root,
+                "context_agent",
+                attempt=0,
+                channel="workflow",
+                event="normalize.foreshadowing",
+                message=f"Context Agent normalized foreshadowing conflicts: {removed_conflicts}",
+            )
+        _validate_context_segments(chapter, compact, context_package)
+        _assert_payload_matches_schema(context_package, _build_stage_schema_context())
+        return context_package
+    finally:
+        _write_context_agent_compat_artifacts(artifact_dir, context_package=context_package)
+
+
+def _build_context_prompt(chapter: int, materials: Dict[str, Any]) -> str:
+    compact = _compact_context_materials(materials, chapter)
+    return _build_context_story_spine_prompt(chapter, _build_context_story_spine_input(chapter, compact))
 
 
 def _write_context_agent_compat_artifacts(artifact_dir: Path, context_package: Optional[Dict[str, Any]] = None) -> None:
@@ -1843,107 +3275,6 @@ def _write_context_agent_compat_artifacts(artifact_dir: Path, context_package: O
     )
     if context_package is not None:
         write_json(artifact_dir / "context_agent.json", context_package)
-
-
-def run_context_agent_stage(
-    *,
-    project_root: Path,
-    chapter: int,
-    materials: Dict[str, Any],
-    artifact_dir: Path,
-    codex_bin: Optional[str] = None,
-) -> Dict[str, Any]:
-    compact = _compact_context_materials(materials, chapter)
-    write_json(artifact_dir / "context.compact.json", compact)
-    context_package: Optional[Dict[str, Any]] = None
-    try:
-        task_brief_payload = run_codex_json_stage(
-            stage_name="context_task_brief",
-            prompt=_build_context_task_brief_prompt(chapter, compact),
-            schema=_build_stage_schema_context_task_brief(),
-            project_root=project_root,
-            artifact_dir=artifact_dir,
-            codex_bin=codex_bin,
-        )
-        task_brief = _extract_context_segment(task_brief_payload, chapter=chapter, key="task_brief", stage_name="context_task_brief")
-
-        contract_payload = run_codex_json_stage(
-            stage_name="context_contract_v2",
-            prompt=_build_context_contract_prompt(chapter, compact, task_brief),
-            schema=_build_stage_schema_context_contract_v2(),
-            project_root=project_root,
-            artifact_dir=artifact_dir,
-            codex_bin=codex_bin,
-        )
-        contract_v2 = _extract_context_segment(contract_payload, chapter=chapter, key="contract_v2", stage_name="context_contract_v2")
-
-        draft_package_payload = run_codex_json_stage(
-            stage_name="context_draft_package",
-            prompt=_build_context_draft_package_prompt(chapter, compact, task_brief, contract_v2),
-            schema=_build_stage_schema_context_draft_package(),
-            project_root=project_root,
-            artifact_dir=artifact_dir,
-            codex_bin=codex_bin,
-        )
-        draft_package = _extract_context_segment(draft_package_payload, chapter=chapter, key="draft_package", stage_name="context_draft_package")
-
-        context_package = {
-            "chapter": chapter,
-            "task_brief": task_brief,
-            "contract_v2": contract_v2,
-            "draft_package": draft_package,
-        }
-        _assert_payload_matches_schema(context_package, _build_stage_schema_context())
-        return context_package
-    finally:
-        _write_context_agent_compat_artifacts(artifact_dir, context_package=context_package)
-
-
-def _build_context_prompt(chapter: int, materials: Dict[str, Any]) -> str:
-    compact = _compact_context_materials(materials, chapter)
-    return f"""你是 webnovel-writer 的 `context-agent`。
-
-目标：基于上游 Claude Code 同构架构，为第 {chapter} 章生成单一“创作执行包”。
-
-必须遵守三条原则：
-1. 大纲即法律：优先遵守章节大纲与卷纲。
-2. 设定即物理：不得制造设定冲突、时间回跳、越级能力。
-3. 发明需识别：若出现新实体或新地点，必须让后续 Data Agent 能识别出来。
-
-还必须遵守 Strand Weave 节奏红线：
-- Quest 连续不超过 5 章
-- Fire 断档不超过 10 章
-- Constellation 断档不超过 15 章
-
-执行规范摘要：
-- 任务书必须覆盖：目标 / 冲突 / 承接 / 角色 / 场景约束 / 伏笔 / 追读力
-- 伏笔不是事后总结，必须在开写前先做设计：先识别已有 open 伏笔债务，再决定本章继续哪条、埋设哪条、禁止提前回收哪条
-- Contract v2 必须覆盖：goal / obstacle / cost / change / unresolved_question / core_conflict / opening_type / emotion_pacing / info_density / is_transition / hook_type / hook_strength / micropayoffs
-- draft_package 必须能直接给 writer-draft 开写：title_suggestion / beat_sheet / immutable_facts / forbidden / checklist / target_words
-- 如果设定、大纲、风格建议冲突，以设定和大纲为准
-- 章节必须接住上章的未闭合问题，并为下一章留下明确承接
-- 若最近 Quest 连续过长，要在 reading_power 或 style_guidance 中提醒补 Fire / Constellation 的透气点
-
-材料包（JSON）：
-{json.dumps(compact, ensure_ascii=False, indent=2)}
-
-输出要求：
-- 只输出一个 JSON 对象
-- 不要输出 Markdown，不要代码块，不要解释
-- 输出必须包含：task_brief, contract_v2, draft_package
-- task_brief 中必须显式给出：
-  - core_task / conflict / must_complete / must_not / villain_tier
-  - carry_from_previous / opening_suggestion
-  - characters / scene_constraints / time_constraints / style_guidance / foreshadowing / foreshadowing_plan / reading_power
-- foreshadowing_plan 必须分成三类：
-  - must_continue：本章必须继续施压或补强的已有伏笔，至少给出 id / content / purpose
-  - planned_new：本章准备新埋的伏笔，至少给出 content / plant_method / purpose / expected_payoff
-  - forbidden_resolve：本章禁止提前解释或回收的伏笔/谜底
-- `foreshadowing` 字段只做创作提示摘要；真正可执行的伏笔设计写进 `foreshadowing_plan`
-- contract_v2 必须给出可执行字段，不能空泛
-- draft_package 必须给出 beat_sheet / immutable_facts / forbidden / checklist / target_words
-- 所有字段都要可直接给 writer-draft 使用
-"""
 
 
 def _build_draft_prompt(chapter: int, context_package: Dict[str, Any], mode: str, chapter_file: str) -> str:
