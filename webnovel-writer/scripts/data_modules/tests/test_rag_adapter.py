@@ -61,6 +61,7 @@ class StubClientRerankFailure(StubClient):
 def temp_project(tmp_path, monkeypatch):
     cfg = DataModulesConfig.from_project_root(tmp_path)
     cfg.ensure_dirs()
+    (cfg.state_file).write_text("{}", encoding="utf-8")
     monkeypatch.setattr(rag_module, "get_client", lambda config: StubClient())
     return cfg
 
@@ -455,6 +456,9 @@ def test_rag_adapter_cli(temp_project, monkeypatch, capsys):
         rag_module.main()
 
     root = str(temp_project.project_root)
+    volume_dir = temp_project.project_root / "正文" / "第1卷"
+    volume_dir.mkdir(parents=True, exist_ok=True)
+    (volume_dir / "第001章.md").write_text("正文", encoding="utf-8")
     run_cli(["--project-root", root, "stats"])
 
     # index-chapter
@@ -475,6 +479,12 @@ def test_rag_adapter_cli(temp_project, monkeypatch, capsys):
     run_cli(["--project-root", root, "search", "--query", "内容", "--mode", "vector", "--top-k", "5"])
     run_cli(["--project-root", root, "search", "--query", "内容", "--mode", "hybrid", "--top-k", "5"])
     run_cli(["--project-root", root, "search", "--query", "内容", "--mode", "auto", "--top-k", "5"])
+
+    adapter = RAGAdapter(temp_project)
+    with adapter._get_conn() as conn:
+        row = conn.execute("SELECT source_file FROM vectors WHERE chunk_id = ?", ("ch0001_s1",)).fetchone()
+    assert row is not None
+    assert row[0] == "正文/第1卷/第001章.md#scene_1"
 
     capsys.readouterr()
 

@@ -200,6 +200,10 @@ def test_process_chapter_result_and_sqlite_sync(temp_project):
                 "adopted": True,
             },
         ],
+        "foreshadowing": [
+            {"content": "药老身份另有隐情", "action": "埋设", "tier": "核心"},
+            {"content": "三年之约逼近", "action": "推进", "tier": "支线"},
+        ],
         "chapter_meta": {"hook": "test", "end": "ok"},
     }
     warnings = manager.process_chapter_result(12, result)
@@ -213,10 +217,122 @@ def test_process_chapter_result_and_sqlite_sync(temp_project):
     assert idx.get_relationship_between("xiaoyan", "yaolao")
     assert idx.get_entity_state_changes("xiaoyan")
 
+    state = json.loads(temp_project.state_file.read_text(encoding="utf-8"))
+    foreshadowing = state.get("plot_threads", {}).get("foreshadowing", [])
+    assert len(foreshadowing) == 2
+    assert foreshadowing[0]["status"] == "未回收"
+    assert foreshadowing[0]["planted_chapter"] == 12
+
+    manager.process_chapter_result(
+        20,
+        {
+            "entities_appeared": [],
+            "entities_new": [],
+            "state_changes": [],
+            "relationships_new": [],
+            "foreshadowing": [{"content": "药老身份另有隐情", "action": "回收"}],
+        },
+    )
+    manager.save_state()
+    resolved_state = json.loads(temp_project.state_file.read_text(encoding="utf-8"))
+    resolved = resolved_state.get("plot_threads", {}).get("foreshadowing", [])[0]
+    assert resolved["status"] == "已回收"
+    assert resolved["resolved_chapter"] == 20
+
     by_type = manager.get_entities_by_type("角色")
     by_tier = manager.get_entities_by_tier("核心")
     assert "xiaoyan" in by_type
     assert "xiaoyan" in by_tier
+
+
+def test_process_chapter_result_prefers_outline_foreshadowing(temp_project):
+    manager = StateManager(temp_project, enable_sqlite_sync=False)
+    manager._state["plot_threads"] = {
+        "active_threads": [],
+        "foreshadowing": [
+            {
+                "content": "开运大会并非求财，而是开“抽运口”",
+                "status": "未回收",
+                "tier": "核心",
+                "planted_chapter": 15,
+                "target_chapter": 50,
+                "source": "outline",
+            }
+        ],
+    }
+
+    warnings = manager.process_chapter_result(
+        15,
+        {
+            "entities_appeared": [],
+            "entities_new": [],
+            "state_changes": [],
+            "relationships_new": [],
+            "foreshadowing": [
+                {"content": "江海开运大会与更大的死局直接相关", "action": "推进"},
+                {"content": "完全未规划的新伏笔", "action": "埋设"},
+            ],
+        },
+    )
+
+    foreshadowing = manager._state["plot_threads"]["foreshadowing"]
+    assert len(foreshadowing) == 1
+    assert foreshadowing[0]["content"] == "开运大会并非求财，而是开“抽运口”"
+    assert any("未匹配到规划伏笔" in warning for warning in warnings)
+
+
+def test_process_chapter_result_backfills_chapter_index_snapshot(temp_project):
+    manager = StateManager(temp_project)
+    manager.add_entity(EntityState(id="xiaoyan", name="萧炎", type="角色", tier="核心"))
+
+    chapters_dir = temp_project.project_root / "正文"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    (chapters_dir / "第0012章.md").write_text(
+        "# 第12章 乌坦城来客\n\n萧炎在乌坦城遇见了药老。",
+        encoding="utf-8",
+    )
+
+    summaries_dir = temp_project.project_root / ".webnovel" / "summaries"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    (summaries_dir / "ch0012.md").write_text(
+        "## 剧情摘要\n萧炎在乌坦城首次与药老正面对话。",
+        encoding="utf-8",
+    )
+
+    result = {
+        "entities_appeared": [{"id": "xiaoyan", "type": "角色", "mentions": ["萧炎"]}],
+        "entities_new": [{"suggested_id": "yaolao", "name": "药老", "type": "角色", "tier": "重要"}],
+        "state_changes": [],
+        "relationships_new": [],
+        "chapter_meta": {"ending": {"location": "乌坦城"}},
+        "scenes": [
+            {
+                "index": 1,
+                "start_line": 1,
+                "end_line": 12,
+                "location": "乌坦城",
+                "summary": "萧炎与药老碰面。",
+                "characters": ["xiaoyan", "yaolao"],
+            }
+        ],
+    }
+
+    manager.process_chapter_result(12, result)
+    manager.save_state()
+
+    chapter = IndexManager(temp_project).get_chapter(12)
+    assert chapter is not None
+    assert chapter["title"] == "乌坦城来客"
+    assert chapter["location"] == "乌坦城"
+    assert chapter["word_count"] > 0
+    assert "xiaoyan" in chapter["characters"]
+    assert "yaolao" in chapter["characters"]
+    assert "萧炎在乌坦城首次与药老正面对话" in chapter["summary"]
+    scenes = IndexManager(temp_project).get_scenes(12)
+    assert len(scenes) == 1
+    assert scenes[0]["scene_index"] == 1
+    assert scenes[0]["location"] == "乌坦城"
+    assert scenes[0]["characters"] == ["xiaoyan", "yaolao"]
 
 
 def test_export_context_and_protagonist_alias(temp_project):
@@ -504,6 +620,10 @@ def test_state_manager_cli_commands(temp_project, monkeypatch, capsys):
             is_protagonist=False,
         )
     )
+    chapters_dir = temp_project.project_root / "正文"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    (chapters_dir / "第0001章.md").write_text("# 第1章 初始章\n\n萧炎登场。", encoding="utf-8")
+    temp_project.state_file.write_text("{}", encoding="utf-8")
 
     def run_cli(args):
         monkeypatch.setattr(sys, "argv", args)
@@ -532,7 +652,23 @@ def test_state_manager_cli_commands(temp_project, monkeypatch, capsys):
     assert out["status"] == "success"
     assert any(e.get("id") == "xiaoyan" for e in out.get("data", []))
 
-    payload = json.dumps({"entities_appeared": [], "entities_new": [], "state_changes": [], "relationships_new": []})
+    payload = json.dumps({
+        "entities_appeared": [{"id": "xiaoyan", "type": "角色", "mentions": ["萧炎"]}],
+        "entities_new": [],
+        "state_changes": [],
+        "relationships_new": [],
+        "chapter_meta": {"ending": {"location": "乌坦城"}},
+        "scenes": [
+            {
+                "index": 1,
+                "start_line": 1,
+                "end_line": 10,
+                "location": "乌坦城",
+                "summary": "初始场景",
+                "characters": ["xiaoyan"],
+            }
+        ],
+    })
     out = run_cli([
         "state_manager",
         "--project-root",
@@ -544,10 +680,18 @@ def test_state_manager_cli_commands(temp_project, monkeypatch, capsys):
         payload,
     ])
     assert out["status"] == "success"
+    assert (temp_project.project_root / ".webnovel" / "health_report.md").exists()
+    chapter = idx.get_chapter(1)
+    assert chapter is not None
+    assert chapter["title"] == "初始章"
+    assert chapter["location"] == "乌坦城"
+    scenes = idx.get_scenes(1)
+    assert len(scenes) == 1
+    assert scenes[0]["summary"] == "初始场景"
 
 
 def test_save_state_timeout(monkeypatch, temp_project):
-    import filelock
+    filelock = pytest.importorskip("filelock")
     from data_modules import state_manager as sm
 
     manager = StateManager(temp_project, enable_sqlite_sync=False)

@@ -1500,6 +1500,21 @@ def main():
                 }
             )
 
+        chapter_source = f"正文/第{args.chapter:04d}章.md"
+        if config:
+            try:
+                from chapter_paths import find_chapter_file, default_chapter_draft_path
+            except ImportError:  # pragma: no cover
+                from scripts.chapter_paths import find_chapter_file, default_chapter_draft_path
+
+            chapter_file = find_chapter_file(config.project_root, args.chapter)
+            if chapter_file is None:
+                chapter_file = default_chapter_draft_path(config.project_root, args.chapter)
+            try:
+                chapter_source = str(chapter_file.relative_to(config.project_root)).replace("\\", "/")
+            except Exception:
+                chapter_source = chapter_file.name
+
         for s in scenes:
             scene_index = s.get("index", 0)
             chunk_id = f"ch{args.chapter:04d}_s{int(scene_index)}"
@@ -1511,7 +1526,7 @@ def main():
                     "chunk_type": "scene",
                     "parent_chunk_id": parent_chunk_id,
                     "chunk_id": chunk_id,
-                    "source_file": f"正文/第{args.chapter:04d}章.md#scene_{int(scene_index)}",
+                    "source_file": f"{chapter_source}#scene_{int(scene_index)}",
                 }
             )
 

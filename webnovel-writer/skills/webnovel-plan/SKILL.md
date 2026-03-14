@@ -440,13 +440,20 @@ Update state (include chapters range):
 ```bash
 python "${SCRIPTS_DIR}/webnovel.py" --project-root "$PROJECT_ROOT" update-state -- \
   --volume-planned {volume_id} \
-  --chapters-range "{start}-{end}"
+  --chapters-range "{start}-{end}" \
+  --sync-foreshadowing-from-outline
 ```
+
+要求：
+- `plot_threads.foreshadowing` 以大纲中的 `伏笔表 / 伏笔规划` 为主数据源。
+- 本步骤完成后，dashboard/context-agent 看到的伏笔应来自规划基线，而不是正文临时抽取。
+- 若 state.json 中已有同内容伏笔，保留其执行态字段（如 `status` / `resolved_chapter`）；不在规划中的临时伏笔默认移除。
 
 Final check:
 - 节拍表文件已写入：`大纲/第{volume_id}卷-节拍表.md`
 - 时间线表文件已写入：`大纲/第{volume_id}卷-时间线.md`
 - 章纲文件已写入：`大纲/第{volume_id}卷-详细大纲.md`
+- `state.json -> plot_threads.foreshadowing` 已与大纲伏笔规划同步
 - 设定集已完成基线补齐与本卷增量补充（原文件内可见）
 - 每章包含：目标/阻力/代价/时间锚点/章内时间跨度/与上章时间差/爽点/Strand/反派层级/视角/关键实体/本章变化/章末未闭合问题/钩子
 - 时间线单调递增，倒计时推进正确

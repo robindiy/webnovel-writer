@@ -120,9 +120,14 @@ def expected_step_owner(command: str, step_id: str) -> str:
     return "unknown"
 
 
-def step_allowed_before(command: str, step_id: str, completed_steps: list[Dict[str, Any]]) -> bool:
+def step_allowed_before(
+    command: str,
+    step_id: str,
+    completed_steps: list[Dict[str, Any]],
+    task_args: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Check simple ordering constraints by pending sequence."""
-    sequence = get_pending_steps(command)
+    sequence = get_pending_steps(command, task_args)
     if step_id not in sequence:
         return True
 
@@ -143,7 +148,7 @@ def _new_task(command: str, args: Dict[str, Any]) -> Dict[str, Any]:
         "current_step": None,
         "completed_steps": [],
         "failed_steps": [],
-        "pending_steps": get_pending_steps(command),
+        "pending_steps": get_pending_steps(command, args),
         "retry_count": 0,
         "artifacts": {
             "chapter_file": {},
@@ -217,19 +222,75 @@ def start_step(step_id, step_name, progress_note=None):
         return
 
     command = str(task.get("command") or "")
-    if not step_allowed_before(command, step_id, task.get("completed_steps", [])):
+    completed_steps = task.get("completed_steps", [])
+    order_ok = step_allowed_before(command, step_id, completed_steps, task.get("args"))
+    current_step = task.get("current_step")
+
+    if current_step and current_step.get("status") in {STEP_STATUS_STARTED, STEP_STATUS_RUNNING}:
+        if current_step.get("id") == step_id:
+            task["last_heartbeat"] = now_iso()
+            if progress_note is not None:
+                current_step["progress_note"] = progress_note
+            save_state(state)
+            safe_append_call_trace(
+                "step_reentered",
+                {
+                    "step_id": step_id,
+                    "command": command,
+                    "chapter": task.get("args", {}).get("chapter_num"),
+                },
+            )
+            print(f"ℹ️ {step_id} 已在运行")
+            return
+
+        if not order_ok:
+            safe_append_call_trace(
+                "step_order_violation",
+                {
+                    "step_id": step_id,
+                    "command": command,
+                    "completed_steps": [row.get("id") for row in completed_steps],
+                },
+            )
+
+        task["last_heartbeat"] = now_iso()
+        save_state(state)
+        safe_append_call_trace(
+            "step_start_rejected",
+            {
+                "requested_step_id": step_id,
+                "active_step_id": current_step.get("id"),
+                "command": command,
+                "reason": "active_step_in_progress",
+            },
+        )
+        print(f"⚠️ 当前 Step 为 {current_step.get('id')}，拒绝启动 {step_id}")
+        return
+
+    if not order_ok:
         safe_append_call_trace(
             "step_order_violation",
             {
                 "step_id": step_id,
                 "command": command,
-                "completed_steps": [row.get("id") for row in task.get("completed_steps", [])],
+                "completed_steps": [row.get("id") for row in completed_steps],
             },
         )
+        task["last_heartbeat"] = now_iso()
+        save_state(state)
+        safe_append_call_trace(
+            "step_start_rejected",
+            {
+                "requested_step_id": step_id,
+                "active_step_id": None,
+                "command": command,
+                "reason": "missing_required_previous_steps",
+            },
+        )
+        print(f"⚠️ {step_id} 缺少前置步骤，拒绝启动")
+        return
 
     owner = expected_step_owner(command, step_id)
-
-    _finalize_current_step_as_failed(task, reason="step_replaced_before_completion")
 
     started_at = now_iso()
     task["current_step"] = {
@@ -316,7 +377,36 @@ def complete_task(final_artifacts_json=None):
         print("⚠️ 无活动任务")
         return
 
-    _finalize_current_step_as_failed(task, reason="task_completed_with_active_step")
+    current_step = task.get("current_step")
+    if current_step and current_step.get("status") in {STEP_STATUS_STARTED, STEP_STATUS_RUNNING}:
+        safe_append_call_trace(
+            "task_complete_rejected",
+            {
+                "command": task.get("command"),
+                "chapter": task.get("args", {}).get("chapter_num"),
+                "reason": "active_step_in_progress",
+                "active_step_id": current_step.get("id"),
+            },
+        )
+        print(f"⚠️ 当前 Step 为 {current_step.get('id')}，拒绝完成任务")
+        return
+
+    required_steps = get_pending_steps(str(task.get("command") or ""), task.get("args"))
+    completed_ids = [str(item.get("id")) for item in task.get("completed_steps", [])]
+    missing_steps = [step_id for step_id in required_steps if step_id not in completed_ids]
+    if missing_steps:
+        safe_append_call_trace(
+            "task_complete_rejected",
+            {
+                "command": task.get("command"),
+                "chapter": task.get("args", {}).get("chapter_num"),
+                "reason": "missing_required_steps",
+                "missing_steps": missing_steps,
+                "completed_steps": completed_ids,
+            },
+        )
+        print(f"⚠️ 缺少必需步骤，拒绝完成任务: {', '.join(missing_steps)}")
+        return
 
     task["status"] = TASK_STATUS_COMPLETED
     task["completed_at"] = now_iso()
@@ -704,11 +794,15 @@ def save_state(state):
     atomic_write_json(state_file, state, use_lock=True, backup=False)
 
 
-def get_pending_steps(command):
+def get_pending_steps(command, task_args: Optional[Dict[str, Any]] = None):
     """Get command pending step list."""
     if command == "webnovel-write":
         # v2: Step 1 内置 Contract v2，不再单独记录 Step 1.5，避免产生 step_order_violation 噪声。
-        return ["Step 1", "Step 2A", "Step 2B", "Step 3", "Step 4", "Step 5", "Step 6"]
+        steps = ["Step 1", "Step 2A", "Step 2B", "Step 3", "Step 4", "Step 5", "Step 6"]
+        mode = str((task_args or {}).get("mode") or "").strip().lower()
+        if mode in {"fast", "minimal"}:
+            steps = [step for step in steps if step != "Step 2B"]
+        return steps
     if command == "webnovel-review":
         return ["Step 1", "Step 2", "Step 3", "Step 4", "Step 5", "Step 6", "Step 7", "Step 8"]
     return []

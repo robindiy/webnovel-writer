@@ -48,11 +48,12 @@ import os
 import sys
 import argparse
 import shutil
+import re
 from pathlib import Path
 
 from runtime_compat import enable_windows_utf8_stdio
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # ============================================================================
 # 安全修复：导入安全工具函数（P1 MEDIUM）
@@ -61,12 +62,155 @@ from security_utils import create_secure_directory, atomic_write_json, restore_f
 from project_locator import resolve_state_file
 from data_modules.state_validator import (
     normalize_foreshadowing_status,
+    normalize_foreshadowing_tier,
     normalize_state_runtime_sections,
+    to_positive_int,
 )
 
 # Windows 编码兼容性修复
 if sys.platform == "win32":
     enable_windows_utf8_stdio()
+
+
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
+_FORESHADOWING_ACTION_PLANT = ("埋设", "新钩子", "铺垫")
+_FORESHADOWING_ACTION_RESOLVE = ("回收", "兑现", "揭晓")
+
+
+def _extract_markdown_table(lines: List[str], heading: str) -> List[Dict[str, str]]:
+    collecting = False
+    table_lines: List[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            current_heading = stripped.lstrip("#").strip()
+            if collecting:
+                break
+            collecting = current_heading == heading
+            continue
+        if not collecting:
+            continue
+        if "|" in line:
+            table_lines.append(line.rstrip("\n"))
+            continue
+        if table_lines and stripped:
+            break
+        if table_lines and not stripped:
+            break
+
+    if len(table_lines) < 2:
+        return []
+
+    header_cells = [cell.strip() for cell in table_lines[0].strip().strip("|").split("|")]
+    rows: List[Dict[str, str]] = []
+    for line in table_lines[1:]:
+        if _MARKDOWN_TABLE_SEPARATOR_RE.match(line):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not any(cells):
+            continue
+        if len(cells) < len(header_cells):
+            cells.extend([""] * (len(header_cells) - len(cells)))
+        row = {header_cells[idx]: cells[idx] for idx in range(len(header_cells))}
+        rows.append(row)
+    return rows
+
+
+def _normalize_outline_tier(raw_tier: str) -> str:
+    text = str(raw_tier or "").strip()
+    if text in {"主线", "暗线"}:
+        return "核心"
+    if text in {"卷内", "卷级"}:
+        return "支线"
+    return normalize_foreshadowing_tier(text)
+
+
+def _is_plant_action(action: str) -> bool:
+    return any(token in action for token in _FORESHADOWING_ACTION_PLANT)
+
+
+def _is_resolve_action(action: str) -> bool:
+    return any(token in action for token in _FORESHADOWING_ACTION_RESOLVE)
+
+
+def _merge_outline_foreshadowing(
+    rows: List[Dict[str, Any]],
+    item: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    content = str(item.get("content") or "").strip()
+    if not content:
+        return rows
+
+    for existing in rows:
+        if str(existing.get("content") or "").strip() != content:
+            continue
+        for key, value in item.items():
+            if value in (None, "", []):
+                continue
+            if key in {"planted_chapter", "target_chapter"} and existing.get(key):
+                if key == "planted_chapter":
+                    existing[key] = min(int(existing[key]), int(value))
+                else:
+                    existing[key] = min(int(existing[key]), int(value))
+                continue
+            existing[key] = value
+        return rows
+
+    rows.append(item)
+    return rows
+
+
+def _collect_outline_foreshadowing(project_root: Path) -> List[Dict[str, Any]]:
+    outline_dir = project_root / "大纲"
+    planned_rows: List[Dict[str, Any]] = []
+
+    total_outline = outline_dir / "总纲.md"
+    if total_outline.exists():
+        total_rows = _extract_markdown_table(total_outline.read_text(encoding="utf-8").splitlines(), "伏笔表")
+        for row in total_rows:
+            content = str(row.get("伏笔内容") or "").strip()
+            if not content:
+                continue
+            item: Dict[str, Any] = {
+                "content": content,
+                "status": "未回收",
+                "tier": _normalize_outline_tier(str(row.get("层级") or "").strip()),
+                "source": "outline",
+                "origin_file": str(total_outline.relative_to(project_root)),
+            }
+            planted = to_positive_int(row.get("埋设章"))
+            target = to_positive_int(row.get("回收章"))
+            if planted is not None:
+                item["planted_chapter"] = planted
+            if target is not None:
+                item["target_chapter"] = target
+            planned_rows = _merge_outline_foreshadowing(planned_rows, item)
+
+    for detail_file in sorted(outline_dir.glob("第*卷-详细大纲.md")):
+        detail_rows = _extract_markdown_table(detail_file.read_text(encoding="utf-8").splitlines(), "伏笔规划")
+        for row in detail_rows:
+            content = str(row.get("伏笔内容") or "").strip()
+            action = str(row.get("操作") or "").strip()
+            chapter = to_positive_int(row.get("章节"))
+            if not content:
+                continue
+            item = {
+                "content": content,
+                "status": "未回收",
+                "tier": "支线",
+                "source": "outline",
+                "origin_file": str(detail_file.relative_to(project_root)),
+                "planned_action": action,
+            }
+            if chapter is not None:
+                if _is_resolve_action(action):
+                    item["target_chapter"] = chapter
+                elif _is_plant_action(action):
+                    item["planted_chapter"] = chapter
+            planned_rows = _merge_outline_foreshadowing(planned_rows, item)
+
+    return planned_rows
 
 class StateUpdater:
     """state.json 安全更新器"""
@@ -302,6 +446,50 @@ class StateUpdater:
 
         print(f"⚠️  未找到伏笔: {content}")
 
+    def sync_foreshadowing_from_outline(self, project_root: Path):
+        """从总纲/卷纲同步规划伏笔到 state.json。"""
+        planned_rows = _collect_outline_foreshadowing(project_root)
+        if not planned_rows:
+            print("⚠️  未从大纲中解析到伏笔规划，跳过同步")
+            return
+
+        plot_threads = self.state.setdefault("plot_threads", {})
+        existing_rows = plot_threads.get("foreshadowing")
+        if not isinstance(existing_rows, list):
+            existing_rows = []
+
+        existing_by_content = {}
+        for row in existing_rows:
+            if not isinstance(row, dict):
+                continue
+            content = str(row.get("content") or "").strip()
+            if content:
+                existing_by_content[content] = row
+
+        merged_rows: List[Dict[str, Any]] = []
+        for planned in planned_rows:
+            content = planned["content"]
+            existing = existing_by_content.get(content, {})
+            merged = dict(planned)
+            for key in [
+                "status",
+                "resolved_chapter",
+                "resolved_at",
+                "added_at",
+                "last_mentioned_chapter",
+                "last_updated",
+            ]:
+                if existing.get(key) not in (None, "", []):
+                    merged[key] = existing[key]
+            if existing.get("planted_chapter") and "planted_chapter" not in merged:
+                merged["planted_chapter"] = existing["planted_chapter"]
+            if existing.get("target_chapter") and "target_chapter" not in merged:
+                merged["target_chapter"] = existing["target_chapter"]
+            merged_rows.append(merged)
+
+        plot_threads["foreshadowing"] = merged_rows
+        print(f"📝 已从大纲同步伏笔: {len(merged_rows)} 条")
+
     def update_progress(self, current_chapter: int, total_words: int):
         """更新创作进度"""
         self.state["progress"]["current_chapter"] = current_chapter
@@ -509,6 +697,12 @@ def main():
         help='章节范围（如 "1-100"）'
     )
 
+    parser.add_argument(
+        '--sync-foreshadowing-from-outline',
+        action='store_true',
+        help='从 大纲/总纲.md 与 第N卷-详细大纲.md 同步伏笔规划到 state.json'
+    )
+
     # 审查记录
     parser.add_argument(
         '--add-review',
@@ -537,6 +731,7 @@ def main():
         args.resolve_foreshadowing,
         args.progress,
         args.volume_planned,
+        args.sync_foreshadowing_from_outline,
         args.add_review,
         args.strand_dominant
     ]):
@@ -600,6 +795,10 @@ def main():
                 print("❌ --volume-planned 需要 --chapters-range 参数")
                 sys.exit(1)
             updater.mark_volume_planned(args.volume_planned, args.chapters_range)
+
+        if args.sync_foreshadowing_from_outline:
+            project_root = state_file_path.parent.parent
+            updater.sync_foreshadowing_from_outline(project_root)
 
         if args.add_review:
             chapters_range, report_file = args.add_review

@@ -111,15 +111,17 @@ cd webnovel-writer
 
 如果你用自己的 fork，把地址替换成你的仓库地址即可。
 
-## 2) 安装 Python 依赖
+## 2) 初始化仓库本地 Python 环境
 
 在仓库根目录执行：
 
 ```bash
-python3 -m pip install -r requirements.txt
+./scripts/bootstrap_env.sh
 ```
 
-如果你的系统没有 `python3`，先确认 Python 是否已正确安装。
+这一步会创建或复用仓库根目录下的 `.venv/`，并安装 `requirements.txt` 里的所有依赖。
+
+如果你的系统没有可用的 Python，先确认 Python 是否已正确安装。
 
 macOS 常见安装方式：
 
@@ -133,6 +135,13 @@ brew install python@3.11
 python3 --version
 ```
 
+环境准备完成后，后续仓库内命令统一优先使用：
+
+```bash
+./scripts/py ...
+./scripts/pytest-local ...
+```
+
 ## 3) 先跑一次临时烟测（推荐）
 
 这一步**不会污染真实 `~/.codex`**，只是先验证适配层是否能正常工作。
@@ -140,7 +149,7 @@ python3 --version
 执行：
 
 ```bash
-python3 scripts/smoke_test_codex_support.py
+./scripts/py scripts/smoke_test_codex_support.py
 ```
 
 如果看到类似下面的结果，就说明通过了：
@@ -162,7 +171,7 @@ python3 scripts/smoke_test_codex_support.py
 如果你想保留现场排查，可以这样跑：
 
 ```bash
-python3 scripts/smoke_test_codex_support.py --keep-temp
+./scripts/py scripts/smoke_test_codex_support.py --keep-temp
 ```
 
 ## 4) 安装到真实 Codex
@@ -170,19 +179,21 @@ python3 scripts/smoke_test_codex_support.py --keep-temp
 确认临时烟测通过后，再执行真实安装：
 
 ```bash
-python3 scripts/install_codex_support.py
+./scripts/py scripts/install_codex_support.py
 ```
 
 安装完成后，默认会写入以下位置：
 
 - `~/.codex/skills/webnovel-writer`
 - `~/.codex/bin/webnovel-codex`
+- `~/.codex/bin/webnovel-init`
 - `~/.codex/bin/webnovel-codex-restore`
 - `~/.codex/webnovel-writer/install_state.json`
 
 其中：
 
 - `webnovel-codex` 是 shell fallback 入口
+- `webnovel-init` 是 TUI 初始化快捷入口（默认等价于 `webnovel.py init --tui`）
 - `webnovel-codex-restore` 是一键恢复入口
 - `install_state.json` 用来记录安装前备份和恢复信息
 
@@ -308,7 +319,7 @@ RERANK_API_KEY=your_rerank_api_key
 请改用：
 
 ```bash
-python3 -m pip install -r requirements.txt
+./scripts/bootstrap_env.sh
 ```
 
 并确认：
@@ -322,7 +333,7 @@ python3 --version
 先确认依赖已经安装：
 
 ```bash
-python3 -m pip install -r requirements.txt
+./scripts/bootstrap_env.sh
 ```
 
 再通过 fallback 启动：
@@ -336,7 +347,7 @@ python3 -m pip install -r requirements.txt
 先跑：
 
 ```bash
-python3 scripts/smoke_test_codex_support.py
+./scripts/py scripts/smoke_test_codex_support.py
 ```
 
 这一步就是为了解决这个问题。
@@ -348,9 +359,9 @@ python3 scripts/smoke_test_codex_support.py
 ```bash
 git clone <your-repo-url>
 cd webnovel-writer
-python3 -m pip install -r requirements.txt
-python3 scripts/smoke_test_codex_support.py
-python3 scripts/install_codex_support.py
+./scripts/bootstrap_env.sh
+./scripts/py scripts/smoke_test_codex_support.py
+./scripts/py scripts/install_codex_support.py
 ~/.codex/bin/webnovel-codex "/webnovel-writer:webnovel-init" --mode codex --json
 mkdir -p "$HOME/Documents/webnovel-workspace"
 cd "$HOME/Documents/webnovel-workspace"

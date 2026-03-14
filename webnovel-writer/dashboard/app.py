@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
@@ -25,19 +26,104 @@ from .watcher import FileWatcher
 # 全局状态
 # ---------------------------------------------------------------------------
 _project_root: Path | None = None
+_workspace_root: Path | None = None
 _watcher = FileWatcher()
 
 STATIC_DIR = Path(__file__).parent / "frontend" / "dist"
 
 
-def _get_project_root() -> Path:
+def _get_project_root(project: str | None = None) -> Path:
+    if project:
+        return _resolve_requested_project(project)
     if _project_root is None:
         raise HTTPException(status_code=500, detail="项目根目录未配置")
     return _project_root
 
 
-def _webnovel_dir() -> Path:
-    return _get_project_root() / ".webnovel"
+def _get_workspace_root() -> Path:
+    if _workspace_root is not None:
+        return _workspace_root
+    if _project_root is not None:
+        return _project_root.parent
+    raise HTTPException(status_code=500, detail="工作区目录未配置")
+
+
+def _webnovel_dir(project: str | None = None) -> Path:
+    return _get_project_root(project) / ".webnovel"
+
+
+def _is_project_root(path: Path) -> bool:
+    return (path / ".webnovel" / "state.json").is_file()
+
+
+def _state_payload(project_root: Path) -> dict:
+    state_path = project_root / ".webnovel" / "state.json"
+    if not state_path.is_file():
+        return {}
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _discover_project_roots(workspace_root: Path) -> list[Path]:
+    seen: set[Path] = set()
+    roots: list[Path] = []
+
+    candidates = [workspace_root]
+    for child in sorted(workspace_root.iterdir()) if workspace_root.is_dir() else []:
+        if not child.is_dir():
+            continue
+        candidates.append(child)
+        for grandchild in sorted(child.iterdir()):
+            if grandchild.is_dir():
+                candidates.append(grandchild)
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved in seen or not _is_project_root(resolved):
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+
+    return roots
+
+
+def _list_available_projects() -> list[dict]:
+    workspace_root = _get_workspace_root()
+    rows = []
+    for project_root in _discover_project_roots(workspace_root):
+        state = _state_payload(project_root)
+        project_info = state.get("project_info") or {}
+        progress = state.get("progress") or {}
+        rows.append({
+            "path": str(project_root),
+            "title": project_info.get("title") or project_root.name,
+            "genre": project_info.get("genre") or "",
+            "created_at": project_info.get("created_at") or "",
+            "current_chapter": int(progress.get("current_chapter") or 0),
+            "total_words": int(progress.get("total_words") or 0),
+            "is_current": project_root == _project_root,
+        })
+    rows.sort(key=lambda item: (0 if item["is_current"] else 1, item["title"], item["path"]))
+    return rows
+
+
+def _resolve_requested_project(project: str) -> Path:
+    try:
+        target = Path(project).expanduser().resolve()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"非法项目路径: {exc}") from exc
+
+    for item in _list_available_projects():
+        if Path(item["path"]) == target:
+            return target
+
+    raise HTTPException(status_code=404, detail="项目不存在或不在当前工作区候选列表中")
 
 
 # ---------------------------------------------------------------------------
@@ -45,16 +131,18 @@ def _webnovel_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 def create_app(project_root: str | Path | None = None) -> FastAPI:
-    global _project_root
+    global _project_root, _workspace_root
 
     if project_root:
         _project_root = Path(project_root).resolve()
+        workspace_env = os.environ.get("WEBNOVEL_WORKSPACE_ROOT")
+        _workspace_root = Path(workspace_env).resolve() if workspace_env else _project_root.parent
 
     @asynccontextmanager
     async def _lifespan(_: FastAPI):
-        webnovel = _webnovel_dir()
-        if webnovel.is_dir():
-            _watcher.start(webnovel, asyncio.get_running_loop())
+        workspace = _get_workspace_root()
+        if workspace.is_dir():
+            _watcher.start(workspace, asyncio.get_running_loop(), recursive=True)
         try:
             yield
         finally:
@@ -74,19 +162,27 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     # ===========================================================
 
     @app.get("/api/project/info")
-    def project_info():
+    def project_info(project: Optional[str] = None):
         """返回 state.json 完整内容（只读）。"""
-        state_path = _webnovel_dir() / "state.json"
+        state_path = _webnovel_dir(project) / "state.json"
         if not state_path.is_file():
             raise HTTPException(404, "state.json 不存在")
         return json.loads(state_path.read_text(encoding="utf-8"))
+
+    @app.get("/api/projects")
+    def list_projects():
+        return {
+            "workspace_root": str(_get_workspace_root()),
+            "current_project": str(_get_project_root()),
+            "projects": _list_available_projects(),
+        }
 
     # ===========================================================
     # API：实体数据库（index.db 只读查询）
     # ===========================================================
 
-    def _get_db() -> sqlite3.Connection:
-        db_path = _webnovel_dir() / "index.db"
+    def _get_db(project: Optional[str] = None) -> sqlite3.Connection:
+        db_path = _webnovel_dir(project) / "index.db"
         if not db_path.is_file():
             raise HTTPException(404, "index.db 不存在")
         conn = sqlite3.connect(str(db_path))
@@ -107,9 +203,10 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     def list_entities(
         entity_type: Optional[str] = Query(None, alias="type"),
         include_archived: bool = False,
+        project: Optional[str] = None,
     ):
         """列出所有实体（可按类型过滤）。"""
-        with closing(_get_db()) as conn:
+        with closing(_get_db(project)) as conn:
             q = "SELECT * FROM entities"
             params: list = []
             clauses: list[str] = []
@@ -125,16 +222,16 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             return [dict(r) for r in rows]
 
     @app.get("/api/entities/{entity_id}")
-    def get_entity(entity_id: str):
-        with closing(_get_db()) as conn:
+    def get_entity(entity_id: str, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             row = conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,)).fetchone()
             if not row:
                 raise HTTPException(404, "实体不存在")
             return dict(row)
 
     @app.get("/api/relationships")
-    def list_relationships(entity: Optional[str] = None, limit: int = 200):
-        with closing(_get_db()) as conn:
+    def list_relationships(entity: Optional[str] = None, limit: int = 200, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if entity:
                 rows = conn.execute(
                     "SELECT * FROM relationships WHERE from_entity = ? OR to_entity = ? ORDER BY chapter DESC LIMIT ?",
@@ -153,8 +250,9 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
         from_chapter: Optional[int] = None,
         to_chapter: Optional[int] = None,
         limit: int = 200,
+        project: Optional[str] = None,
     ):
-        with closing(_get_db()) as conn:
+        with closing(_get_db(project)) as conn:
             q = "SELECT * FROM relationship_events"
             params: list = []
             clauses: list[str] = []
@@ -175,14 +273,14 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             return [dict(r) for r in rows]
 
     @app.get("/api/chapters")
-    def list_chapters():
-        with closing(_get_db()) as conn:
+    def list_chapters(project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             rows = conn.execute("SELECT * FROM chapters ORDER BY chapter ASC").fetchall()
             return [dict(r) for r in rows]
 
     @app.get("/api/scenes")
-    def list_scenes(chapter: Optional[int] = None, limit: int = 500):
-        with closing(_get_db()) as conn:
+    def list_scenes(chapter: Optional[int] = None, limit: int = 500, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if chapter is not None:
                 rows = conn.execute(
                     "SELECT * FROM scenes WHERE chapter = ? ORDER BY scene_index ASC", (chapter,)
@@ -194,24 +292,24 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             return [dict(r) for r in rows]
 
     @app.get("/api/reading-power")
-    def list_reading_power(limit: int = 50):
-        with closing(_get_db()) as conn:
+    def list_reading_power(limit: int = 50, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             rows = conn.execute(
                 "SELECT * FROM chapter_reading_power ORDER BY chapter DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
 
     @app.get("/api/review-metrics")
-    def list_review_metrics(limit: int = 20):
-        with closing(_get_db()) as conn:
+    def list_review_metrics(limit: int = 20, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             rows = conn.execute(
                 "SELECT * FROM review_metrics ORDER BY end_chapter DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
 
     @app.get("/api/state-changes")
-    def list_state_changes(entity: Optional[str] = None, limit: int = 100):
-        with closing(_get_db()) as conn:
+    def list_state_changes(entity: Optional[str] = None, limit: int = 100, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if entity:
                 rows = conn.execute(
                     "SELECT * FROM state_changes WHERE entity_id = ? ORDER BY chapter DESC LIMIT ?",
@@ -224,8 +322,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             return [dict(r) for r in rows]
 
     @app.get("/api/aliases")
-    def list_aliases(entity: Optional[str] = None):
-        with closing(_get_db()) as conn:
+    def list_aliases(entity: Optional[str] = None, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if entity:
                 rows = conn.execute(
                     "SELECT * FROM aliases WHERE entity_id = ?", (entity,)
@@ -239,8 +337,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     # ===========================================================
 
     @app.get("/api/overrides")
-    def list_overrides(status: Optional[str] = None, limit: int = 100):
-        with closing(_get_db()) as conn:
+    def list_overrides(status: Optional[str] = None, limit: int = 100, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if status:
                 return _fetchall_safe(
                     conn,
@@ -254,8 +352,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             )
 
     @app.get("/api/debts")
-    def list_debts(status: Optional[str] = None, limit: int = 100):
-        with closing(_get_db()) as conn:
+    def list_debts(status: Optional[str] = None, limit: int = 100, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if status:
                 return _fetchall_safe(
                     conn,
@@ -269,8 +367,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             )
 
     @app.get("/api/debt-events")
-    def list_debt_events(debt_id: Optional[int] = None, limit: int = 200):
-        with closing(_get_db()) as conn:
+    def list_debt_events(debt_id: Optional[int] = None, limit: int = 200, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if debt_id is not None:
                 return _fetchall_safe(
                     conn,
@@ -284,8 +382,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             )
 
     @app.get("/api/invalid-facts")
-    def list_invalid_facts(status: Optional[str] = None, limit: int = 100):
-        with closing(_get_db()) as conn:
+    def list_invalid_facts(status: Optional[str] = None, limit: int = 100, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if status:
                 return _fetchall_safe(
                     conn,
@@ -299,8 +397,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             )
 
     @app.get("/api/rag-queries")
-    def list_rag_queries(query_type: Optional[str] = None, limit: int = 100):
-        with closing(_get_db()) as conn:
+    def list_rag_queries(query_type: Optional[str] = None, limit: int = 100, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if query_type:
                 return _fetchall_safe(
                     conn,
@@ -314,8 +412,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             )
 
     @app.get("/api/tool-stats")
-    def list_tool_stats(tool_name: Optional[str] = None, limit: int = 200):
-        with closing(_get_db()) as conn:
+    def list_tool_stats(tool_name: Optional[str] = None, limit: int = 200, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             if tool_name:
                 return _fetchall_safe(
                     conn,
@@ -329,8 +427,8 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
             )
 
     @app.get("/api/checklist-scores")
-    def list_checklist_scores(limit: int = 100):
-        with closing(_get_db()) as conn:
+    def list_checklist_scores(limit: int = 100, project: Optional[str] = None):
+        with closing(_get_db(project)) as conn:
             return _fetchall_safe(
                 conn,
                 "SELECT * FROM writing_checklist_scores ORDER BY chapter DESC LIMIT ?",
@@ -342,9 +440,9 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     # ===========================================================
 
     @app.get("/api/files/tree")
-    def file_tree():
+    def file_tree(project: Optional[str] = None):
         """列出 正文/、大纲/、设定集/ 三个目录的树结构。"""
-        root = _get_project_root()
+        root = _get_project_root(project)
         result = {}
         for folder_name in ("正文", "大纲", "设定集"):
             folder = root / folder_name
@@ -355,9 +453,9 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
         return result
 
     @app.get("/api/files/read")
-    def file_read(path: str):
+    def file_read(path: str, project: Optional[str] = None):
         """只读读取一个文件内容（限 正文/大纲/设定集 目录）。"""
-        root = _get_project_root()
+        root = _get_project_root(project)
         resolved = safe_resolve(root, path)
 
         # 二次限制：只允许三大目录

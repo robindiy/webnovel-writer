@@ -17,6 +17,13 @@ Set-Location $ProjectRoot
 $tmpRoot = Join-Path $ProjectRoot ".tmp\\pytest"
 New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
 
+$venvPython = Join-Path $ProjectRoot ".venv\\Scripts\\python.exe"
+if (Test-Path $venvPython) {
+    $PythonExe = $venvPython
+} else {
+    $PythonExe = "python"
+}
+
 $env:TMP = $tmpRoot
 $env:TEMP = $tmpRoot
 $env:PYTHONPATH = ".claude/scripts"
@@ -44,7 +51,7 @@ try:
 except Exception as exc:
     print(f"PYTEST_TMPDIR_PRECHECK_FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
     raise
-'@ | python - 2>$null
+'@ | & $PythonExe - 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "❌ Python 临时目录预检失败（常见原因：WindowsApps 的 python.exe shim / 权限异常）"
@@ -53,7 +60,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if ($Mode -eq "smoke") {
-    python -m pytest -q `
+    & $PythonExe -m pytest -q `
         .claude/scripts/data_modules/tests/test_extract_chapter_context.py `
         .claude/scripts/data_modules/tests/test_rag_adapter.py `
         --basetemp $baseTemp `
@@ -62,7 +69,7 @@ if ($Mode -eq "smoke") {
     exit $LASTEXITCODE
 }
 
-python -m pytest -q `
+& $PythonExe -m pytest -q `
     .claude/scripts/data_modules/tests `
     --basetemp $baseTemp `
     -p no:cacheprovider

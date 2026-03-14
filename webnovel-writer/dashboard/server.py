@@ -45,8 +45,17 @@ def _resolve_project_root(cli_root: str | None) -> Path:
 def main():
     parser = argparse.ArgumentParser(description="Webnovel Dashboard Server")
     parser.add_argument("--project-root", type=str, default=None, help="小说项目根目录")
-    parser.add_argument("--host", default="127.0.0.1", help="监听地址")
-    parser.add_argument("--port", type=int, default=8765, help="监听端口")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("WEBNOVEL_DASHBOARD_HOST", "127.0.0.1"),
+        help="监听地址",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("WEBNOVEL_DASHBOARD_PORT", "5678")),
+        help="监听端口",
+    )
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     args = parser.parse_args()
 

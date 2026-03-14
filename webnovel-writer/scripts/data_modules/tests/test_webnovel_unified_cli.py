@@ -46,6 +46,36 @@ def test_init_does_not_resolve_existing_project_root(monkeypatch):
     assert called["argv"] == ["proj-dir", "测试书", "修仙"]
 
 
+def test_init_tui_routes_to_dedicated_script(monkeypatch):
+    module = _load_webnovel_module()
+
+    called = {}
+
+    def _fake_run_script(script_name, argv):
+        called["script_name"] = script_name
+        called["argv"] = list(argv)
+        return 0
+
+    def _fail_resolve(_explicit_project_root=None):
+        raise AssertionError("init --tui 子命令不应触发 project_root 解析")
+
+    monkeypatch.setenv("WEBNOVEL_PROJECT_ROOT", r"D:\invalid\root")
+    monkeypatch.setattr(module, "_run_script", _fake_run_script)
+    monkeypatch.setattr(module, "_resolve_root", _fail_resolve)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["webnovel", "init", "--tui", "--workspace-root", "/tmp/books", "--title", "测试书"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    assert int(exc.value.code or 0) == 0
+    assert called["script_name"] == "init_tui.py"
+    assert called["argv"] == ["--workspace-root", "/tmp/books", "--title", "测试书"]
+
+
 def test_extract_context_forwards_with_resolved_project_root(monkeypatch, tmp_path):
     module = _load_webnovel_module()
 

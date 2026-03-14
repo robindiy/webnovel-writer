@@ -48,6 +48,7 @@ Codex 支持安装完成后，默认会写入：
 统一前置（手动 CLI 场景）：
 
 ```bash
+./scripts/bootstrap_env.sh
 export WORKSPACE_ROOT="$PWD"
 export PROJECT_ROOT="/path/to/your/book-project"
 ```
@@ -55,29 +56,29 @@ export PROJECT_ROOT="/path/to/your/book-project"
 ### 索引重建
 
 ```bash
-python3 webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" index process-chapter --chapter 1
-python3 webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" index stats
+./scripts/py webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" index process-chapter --chapter 1
+./scripts/py webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" index stats
 ```
 
 ### 健康报告
 
 ```bash
-python3 webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" status -- --focus all
-python3 webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" status -- --focus urgency
+./scripts/py webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" status -- --focus all
+./scripts/py webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" status -- --focus urgency
 ```
 
 ### 向量重建
 
 ```bash
-python3 webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" rag index-chapter --chapter 1
-python3 webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" rag stats
+./scripts/py webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" rag index-chapter --chapter 1
+./scripts/py webnovel-writer/scripts/webnovel.py --project-root "${PROJECT_ROOT}" rag stats
 ```
 
 ### 测试入口
 
 ```bash
-python3 scripts/smoke_test_codex_support.py
-python3 -m pytest
+./scripts/py scripts/smoke_test_codex_support.py
+./scripts/pytest-local
 ```
 
 ## Codex 适配层运维
@@ -85,7 +86,7 @@ python3 -m pytest
 ### 安装到 Codex
 
 ```bash
-python3 scripts/install_codex_support.py
+./scripts/py scripts/install_codex_support.py
 ```
 
 默认会写入：
@@ -98,7 +99,7 @@ python3 scripts/install_codex_support.py
 ### 临时环境烟测（推荐先跑）
 
 ```bash
-python3 scripts/smoke_test_codex_support.py
+./scripts/py scripts/smoke_test_codex_support.py
 ```
 
 说明：

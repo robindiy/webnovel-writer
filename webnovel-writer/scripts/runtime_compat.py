@@ -14,6 +14,25 @@ from pathlib import Path
 from typing import Union
 
 
+def ensure_local_pydeps(start: Union[str, Path, None] = None) -> Path | None:
+    """Add the nearest `.pydeps` directory to `sys.path` when present."""
+    anchor = Path(start).resolve() if start is not None else Path(__file__).resolve()
+    current = anchor if anchor.is_dir() else anchor.parent
+
+    for base in (current, *current.parents):
+        pydeps = base / ".pydeps"
+        if pydeps.is_dir():
+            pydeps_str = str(pydeps)
+            if pydeps_str not in sys.path:
+                sys.path.insert(0, pydeps_str)
+            return pydeps
+
+    return None
+
+
+ensure_local_pydeps()
+
+
 def enable_windows_utf8_stdio(*, skip_in_pytest: bool = False) -> bool:
     """Enable UTF-8 stdio wrappers on Windows.
 

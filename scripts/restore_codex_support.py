@@ -87,14 +87,21 @@ def restore_codex_support(*, codex_home: Optional[Union[str, Path]] = None) -> d
     skill_target = Path(targets["skill_root"]).expanduser().resolve()
     wrapper_target = Path(targets["wrapper_path"]).expanduser().resolve()
     restore_wrapper_target = Path(targets["restore_wrapper_path"]).expanduser().resolve()
+    shortcut_wrapper_targets = {
+        name: Path(path).expanduser().resolve()
+        for name, path in (targets.get("shortcut_wrapper_paths") or {}).items()
+    }
 
     _remove_path(skill_target)
     _remove_path(wrapper_target)
     _remove_path(restore_wrapper_target)
+    for target in shortcut_wrapper_targets.values():
+        _remove_path(target)
 
     restored_skill = False
     restored_wrapper = False
     restored_restore_wrapper = False
+    restored_shortcut_wrappers: dict[str, bool] = {}
 
     if previous_install.get("skill_root_backed_up"):
         restored_skill = _restore_path(
@@ -111,6 +118,14 @@ def restore_codex_support(*, codex_home: Optional[Union[str, Path]] = None) -> d
             backup_dir / "bin" / "webnovel-codex-restore",
             restore_wrapper_target,
         )
+    for name, target in shortcut_wrapper_targets.items():
+        if (previous_install.get("shortcut_wrappers_backed_up") or {}).get(name):
+            restored_shortcut_wrappers[name] = _restore_path(
+                backup_dir / "bin" / name,
+                target,
+            )
+        else:
+            restored_shortcut_wrappers[name] = False
 
     _cleanup_state(resolved_codex_home, backup_dir)
 
@@ -119,6 +134,7 @@ def restore_codex_support(*, codex_home: Optional[Union[str, Path]] = None) -> d
         "restored_skill": restored_skill,
         "restored_wrapper": restored_wrapper,
         "restored_restore_wrapper": restored_restore_wrapper,
+        "restored_shortcut_wrappers": restored_shortcut_wrappers,
     }
 
 

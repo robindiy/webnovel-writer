@@ -15,7 +15,8 @@ Use the installed helper to normalize the user's command before taking action.
 2. Run:
 
 ```bash
-python3 scripts/run_webnovel_command.py --json <original command tokens>
+PYTHON_EXEC="${PYTHON_BIN:-$(command -v python3 || command -v python)}"
+"${PYTHON_EXEC}" scripts/run_webnovel_command.py --json <original command tokens>
 ```
 
 3. Interpret the JSON response:
@@ -26,6 +27,6 @@ python3 scripts/run_webnovel_command.py --json <original command tokens>
 ## Compatibility Rules
 
 - Preserve the original `/webnovel-writer:*` command wording in user-visible messages.
-- Prefer `python3` or the resolved interpreter; do not rely on bare `python`.
+- Prefer the resolved interpreter or repo-local `.venv` when available; do not rely on bare `python`.
 - Treat the repository skill docs as the source of truth for creative workflow behavior.
 - Use the helper's resolved `project_root` when a command requires an existing book project.

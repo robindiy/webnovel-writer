@@ -99,11 +99,12 @@ cat "${SKILL_ROOT}/references/pacing-control.md"
 cat "$PROJECT_ROOT/.webnovel/state.json"
 ```
 
-## Step 3: 并行调用检查员（Task）
+## Step 3: 并行调用检查员（Task 优先，可主程序兜底）
 
 **调用约束**:
-- 必须通过 `Task` 工具调用审查 subagent，禁止主流程直接内联审查结论。
-- 各 subagent 结果全部返回后再生成总评与优先级。
+- 优先通过 `Task` 工具调用审查 subagent。
+- 若 `Task`/exec 子程序不可用或不稳定，可由主程序按相同检查器标准顺序执行，并在 `notes` 标记 `main_program_fallback_review`。
+- 各 subagent 结果全部返回后再生成总评与优先级；若主程序兜底，同样要等全部检查完成后再汇总。
 
 **Core**:
 - `consistency-checker`

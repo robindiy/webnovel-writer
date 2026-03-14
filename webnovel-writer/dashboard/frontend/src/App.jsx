@@ -1,6 +1,49 @@
-import { useState, useEffect, useCallback } from 'react'
-import { fetchJSON, subscribeSSE } from './api.js'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { fetchJSON, subscribeSSE, setProjectContext } from './api.js'
 import ForceGraph3D from 'react-force-graph-3d'
+
+function resetScrollPosition(node) {
+    if (!node) return
+    if (typeof node.scrollTo === 'function') {
+        node.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+        return
+    }
+    node.scrollTop = 0
+    node.scrollLeft = 0
+}
+
+function useScrollReset(ref, deps) {
+    useEffect(() => {
+        resetScrollPosition(ref.current)
+    }, deps)
+}
+
+function useIsMobileViewport(maxWidth = 960) {
+    const getInitialValue = () => {
+        if (typeof window === 'undefined') return false
+        return window.innerWidth <= maxWidth
+    }
+
+    const [isMobile, setIsMobile] = useState(getInitialValue)
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return undefined
+
+        const media = window.matchMedia(`(max-width: ${maxWidth}px)`)
+        const update = () => setIsMobile(media.matches)
+        update()
+
+        if (typeof media.addEventListener === 'function') {
+            media.addEventListener('change', update)
+            return () => media.removeEventListener('change', update)
+        }
+
+        media.addListener(update)
+        return () => media.removeListener(update)
+    }, [maxWidth])
+
+    return isMobile
+}
 
 // ====================================================================
 // 主应用
@@ -9,19 +52,58 @@ import ForceGraph3D from 'react-force-graph-3d'
 export default function App() {
     const [page, setPage] = useState('dashboard')
     const [projectInfo, setProjectInfo] = useState(null)
+    const [projects, setProjects] = useState([])
+    const [selectedProject, setSelectedProject] = useState(null)
+    const [projectsLoading, setProjectsLoading] = useState(true)
     const [refreshKey, setRefreshKey] = useState(0)
     const [connected, setConnected] = useState(false)
+    const mainContentRef = useRef(null)
 
     const loadProjectInfo = useCallback(() => {
+        if (!selectedProject) {
+            setProjectInfo(null)
+            return
+        }
         fetchJSON('/api/project/info')
             .then(setProjectInfo)
             .catch(() => setProjectInfo(null))
+    }, [selectedProject])
+
+    const loadProjects = useCallback(() => {
+        setProjectsLoading(true)
+        fetchJSON('/api/projects')
+            .then(data => {
+                const items = Array.isArray(data?.projects) ? data.projects : []
+                setProjects(items)
+                setSelectedProject(prev => {
+                    if (prev && items.some(item => item.path === prev)) return prev
+                    if (items.length === 1) return items[0].path
+                    return null
+                })
+            })
+            .catch(() => {
+                setProjects([])
+                setSelectedProject(null)
+            })
+            .finally(() => setProjectsLoading(false))
     }, [])
 
+    useEffect(() => { loadProjects() }, [loadProjects])
+    useEffect(() => {
+        setProjectContext(selectedProject)
+        if (selectedProject) {
+            setRefreshKey(k => k + 1)
+        }
+    }, [selectedProject])
     useEffect(() => { loadProjectInfo() }, [loadProjectInfo, refreshKey])
+    useScrollReset(mainContentRef, [page])
 
     // SSE 订阅
     useEffect(() => {
+        if (!selectedProject) {
+            setConnected(false)
+            return undefined
+        }
         const unsub = subscribeSSE(
             () => {
                 setRefreshKey(k => k + 1)
@@ -32,9 +114,22 @@ export default function App() {
             },
         )
         return () => { unsub(); setConnected(false) }
-    }, [])
+    }, [selectedProject])
 
     const title = projectInfo?.project_info?.title || '未加载'
+
+    if (projectsLoading) {
+        return <div className="loading">加载书项目中…</div>
+    }
+
+    if (!selectedProject) {
+        return (
+            <ProjectSelector
+                projects={projects}
+                onSelect={setSelectedProject}
+            />
+        )
+    }
 
     return (
         <div className="app-layout">
@@ -42,6 +137,13 @@ export default function App() {
                 <div className="sidebar-header">
                     <h1>PIXEL WRITER HUB</h1>
                     <div className="subtitle">{title}</div>
+                    <button
+                        type="button"
+                        className="project-switch-btn"
+                        onClick={() => setSelectedProject(null)}
+                    >
+                        切换书籍
+                    </button>
                 </div>
                 <nav className="sidebar-nav">
                     {NAV_ITEMS.map(item => (
@@ -61,7 +163,7 @@ export default function App() {
                 </div>
             </aside>
 
-            <main className="main-content">
+            <main className="main-content" ref={mainContentRef}>
                 {page === 'dashboard' && <DashboardPage data={projectInfo} key={refreshKey} />}
                 {page === 'entities' && <EntitiesPage key={refreshKey} />}
                 {page === 'graph' && <GraphPage key={refreshKey} />}
@@ -69,6 +171,43 @@ export default function App() {
                 {page === 'files' && <FilesPage />}
                 {page === 'reading' && <ReadingPowerPage key={refreshKey} />}
             </main>
+        </div>
+    )
+}
+
+function ProjectSelector({ projects, onSelect }) {
+    return (
+        <div className="project-selector-shell">
+            <div className="project-selector-card">
+                <div className="page-header">
+                    <h2>📚 选择书项目</h2>
+                    <span className="card-badge badge-cyan">{projects.length} 本</span>
+                </div>
+                {projects.length > 0 ? (
+                    <div className="project-selector-grid">
+                        {projects.map(project => (
+                            <button
+                                key={project.path}
+                                type="button"
+                                className="project-selector-item"
+                                onClick={() => onSelect(project.path)}
+                            >
+                                <span className="project-selector-title">{project.title}</span>
+                                <span className="project-selector-meta">{project.genre || '未设题材'}</span>
+                                <span className="project-selector-meta">
+                                    第 {project.current_chapter || 0} 章 · {formatNumber(project.total_words || 0)} 字
+                                </span>
+                                <span className="project-selector-path">{project.path}</span>
+                            </button>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="empty-state">
+                        <div className="empty-icon">📭</div>
+                        <p>当前工作区未发现可读取的书项目</p>
+                    </div>
+                )}
+            </div>
         </div>
     )
 }
@@ -235,16 +374,19 @@ function EntitiesPage() {
     const [typeFilter, setTypeFilter] = useState('')
     const [selected, setSelected] = useState(null)
     const [changes, setChanges] = useState([])
+    const detailRef = useRef(null)
 
     useEffect(() => {
         fetchJSON('/api/entities').then(setEntities).catch(() => { })
     }, [])
 
     useEffect(() => {
+        setChanges([])
         if (selected) {
             fetchJSON('/api/state-changes', { entity: selected.id, limit: 30 }).then(setChanges).catch(() => setChanges([]))
         }
     }, [selected])
+    useScrollReset(detailRef, [selected?.id])
 
     const types = [...new Set(entities.map(e => e.type))].sort()
     const filteredEntities = typeFilter ? entities.filter(e => e.type === typeFilter) : entities
@@ -295,8 +437,8 @@ function EntitiesPage() {
                 </div>
 
                 {selected && (
-                    <div className="split-side">
-                        <div className="card">
+                    <div className="split-side" ref={detailRef}>
+                        <div className="card" key={selected.id}>
                             <div className="card-header">
                                 <span className="card-title">{selected.canonical_name}</span>
                                 <span className="card-badge badge-purple">{selected.tier}</span>
@@ -458,6 +600,10 @@ function FilesPage() {
     const [tree, setTree] = useState({})
     const [selectedPath, setSelectedPath] = useState(null)
     const [content, setContent] = useState('')
+    const [readerPath, setReaderPath] = useState(null)
+    const contentPaneRef = useRef(null)
+    const readerPaneRef = useRef(null)
+    const isMobileViewport = useIsMobileViewport()
 
     useEffect(() => {
         fetchJSON('/api/files/tree').then(setTree).catch(() => { })
@@ -476,6 +622,37 @@ function FilesPage() {
         const first = findFirstFilePath(tree)
         if (first) setSelectedPath(first)
     }, [tree, selectedPath])
+    useScrollReset(contentPaneRef, [selectedPath])
+    useScrollReset(readerPaneRef, [readerPath, content])
+
+    useEffect(() => {
+        if (!isMobileViewport && readerPath) {
+            setReaderPath(null)
+        }
+    }, [isMobileViewport, readerPath])
+
+    const chapterFiles = listChapterFilePaths(tree)
+    const readerIndex = readerPath ? chapterFiles.indexOf(readerPath) : -1
+    const nextChapterPath = readerIndex >= 0 ? chapterFiles[readerIndex + 1] || null : null
+
+    const handleSelectPath = useCallback((path) => {
+        setSelectedPath(path)
+        if (isMobileViewport && isChapterFile(path)) {
+            setReaderPath(path)
+        }
+    }, [isMobileViewport])
+
+    const handleExitReader = useCallback(() => {
+        setReaderPath(null)
+    }, [])
+
+    const handleNextChapter = useCallback(() => {
+        if (!nextChapterPath) return
+        setSelectedPath(nextChapterPath)
+        setReaderPath(nextChapterPath)
+    }, [nextChapterPath])
+
+    const readerActive = isMobileViewport && readerPath && readerPath === selectedPath
 
     return (
         <>
@@ -488,22 +665,52 @@ function FilesPage() {
                         <div key={folder} className="folder-block">
                             <div className="folder-title">📂 {folder}</div>
                             <ul className="file-tree">
-                                <TreeNodes items={items} selected={selectedPath} onSelect={setSelectedPath} />
+                                <TreeNodes items={items} selected={selectedPath} onSelect={handleSelectPath} />
                             </ul>
                         </div>
                     ))}
                 </div>
                 <div className="file-content-pane">
                     {selectedPath ? (
-                        <div>
+                        <div key={selectedPath}>
                             <div className="selected-path">{selectedPath}</div>
-                            <div className="file-preview">{content}</div>
+                            <div className="file-preview" ref={contentPaneRef}>{content}</div>
                         </div>
                     ) : (
                         <div className="empty-state"><div className="empty-icon">📄</div><p>选择左侧文件以预览内容</p></div>
                     )}
                 </div>
             </div>
+            {readerActive ? (
+                <div className="mobile-reader-overlay" role="dialog" aria-modal="true">
+                    <div className="mobile-reader-shell">
+                        <div className="mobile-reader-header">
+                            <span className="mobile-reader-kicker">章节阅读模式</span>
+                            <span className="mobile-reader-title">{selectedPath}</span>
+                        </div>
+                        <div className="mobile-reader-body" ref={readerPaneRef}>
+                            <article className="mobile-reader-content">{content}</article>
+                            <div className="mobile-reader-actions">
+                                <button
+                                    type="button"
+                                    className="page-btn"
+                                    onClick={handleNextChapter}
+                                    disabled={!nextChapterPath}
+                                >
+                                    {nextChapterPath ? '下一章' : '已是最后一章'}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="page-btn"
+                                    onClick={handleExitReader}
+                                >
+                                    退出阅读
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
         </>
     )
 }
@@ -575,6 +782,37 @@ function walkFirstFile(items) {
     return null
 }
 
+function listChapterFilePaths(tree) {
+    const paths = []
+    const roots = Object.values(tree || {})
+    roots.forEach(items => walkChapterFiles(items, paths))
+    return paths.sort((left, right) => extractChapterNumber(left) - extractChapterNumber(right))
+}
+
+function walkChapterFiles(items, output) {
+    if (!Array.isArray(items)) return
+    items.forEach(item => {
+        if (item?.type === 'file' && item?.path && isChapterFile(item.path)) {
+            output.push(item.path)
+            return
+        }
+        if (item?.type === 'dir' && Array.isArray(item.children)) {
+            walkChapterFiles(item.children, output)
+        }
+    })
+}
+
+function isChapterFile(path) {
+    const text = String(path || '')
+    return /(^|\/)正文\/.*第0*\d+章.*\.md$/u.test(text) || /(^|\/)正文\/第0*\d+章.*\.md$/u.test(text)
+}
+
+function extractChapterNumber(path) {
+    const text = String(path || '')
+    const match = text.match(/第0*(\d+)章/u)
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER
+}
+
 
 // ====================================================================
 // 数据总览内嵌：全量数据视图
@@ -584,6 +822,7 @@ function MergedDataView() {
     const [loading, setLoading] = useState(true)
     const [payload, setPayload] = useState({})
     const [domain, setDomain] = useState('overview')
+    const domainViewRef = useRef(null)
 
     useEffect(() => {
         let disposed = false
@@ -628,6 +867,7 @@ function MergedDataView() {
         loadAll()
         return () => { disposed = true }
     }, [])
+    useScrollReset(domainViewRef, [domain])
 
     if (loading) return <div className="loading">加载全量数据中…</div>
 
@@ -652,7 +892,7 @@ function MergedDataView() {
     })
 
     return (
-        <>
+        <div ref={domainViewRef}>
             <div className="page-header section-page-header">
                 <h2>🧪 全量数据视图</h2>
                 <span className="card-badge badge-cyan">{FULL_DATA_GROUPS.length} 类数据源</span>
@@ -724,16 +964,18 @@ function MergedDataView() {
                     </div>
                 )
             })}
-        </>
+        </div>
     )
 }
 
 function MiniTable({ rows, columns, pageSize = 12 }) {
     const [page, setPage] = useState(1)
+    const tableWrapRef = useRef(null)
 
     useEffect(() => {
         setPage(1)
     }, [rows, columns, pageSize])
+    useScrollReset(tableWrapRef, [page, rows])
 
     if (!rows || rows.length === 0) {
         return <div className="empty-state compact"><p>暂无数据</p></div>
@@ -746,7 +988,7 @@ function MiniTable({ rows, columns, pageSize = 12 }) {
 
     return (
         <>
-            <div className="table-wrap">
+            <div className="table-wrap" ref={tableWrapRef}>
                 <table className="data-table">
                     <thead>
                         <tr>{columns.map(c => <th key={c}>{c}</th>)}</tr>

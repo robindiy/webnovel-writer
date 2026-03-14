@@ -19,6 +19,10 @@ INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_codex_support.py"
 
 
 def _python_exec() -> str:
+    local_venv = REPO_ROOT / ".venv" / "bin" / "python"
+    if local_venv.is_file():
+        return str(local_venv)
+
     executable = str(getattr(sys, "executable", "") or "").strip()
     return executable or "python3"
 
@@ -62,10 +66,13 @@ def run_smoke_test(*, keep_temp: bool = False) -> dict[str, object]:
 
         wrapper_path = Path(install_payload["wrapper_path"])
         restore_wrapper_path = Path(install_payload["restore_wrapper_path"])
+        init_wrapper_path = Path((install_payload.get("shortcut_wrapper_paths") or {})["webnovel-init"])
         if not wrapper_path.is_file():
             raise RuntimeError(f"Wrapper missing after install: {wrapper_path}")
         if not restore_wrapper_path.is_file():
             raise RuntimeError(f"Restore wrapper missing after install: {restore_wrapper_path}")
+        if not init_wrapper_path.is_file():
+            raise RuntimeError(f"Init shortcut wrapper missing after install: {init_wrapper_path}")
 
         command_proc = _run(
             [
@@ -94,6 +101,8 @@ def run_smoke_test(*, keep_temp: bool = False) -> dict[str, object]:
             raise RuntimeError("Legacy skill bundle was not restored")
         if "legacy wrapper" not in restored_wrapper_text:
             raise RuntimeError("Legacy wrapper was not restored")
+        if init_wrapper_path.exists():
+            raise RuntimeError("Shortcut wrapper was not cleaned up")
         if state_path.exists():
             raise RuntimeError("Install state was not cleaned up")
 

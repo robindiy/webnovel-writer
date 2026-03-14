@@ -14,6 +14,14 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
+for _base in (_PACKAGE_DIR, *_PACKAGE_DIR.parents):
+    _pydeps = _base / ".pydeps"
+    if _pydeps.is_dir():
+        _pydeps_str = str(_pydeps)
+        if _pydeps_str not in sys.path:
+            sys.path.insert(0, _pydeps_str)
+        break
+
 # Expose main modules
 from . import security_utils
 from . import project_locator

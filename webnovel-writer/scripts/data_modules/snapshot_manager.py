@@ -8,11 +8,23 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from filelock import FileLock
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import get_config
+
+try:
+    from filelock import FileLock
+except ImportError:  # pragma: no cover
+    class FileLock:  # type: ignore[override]
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb) -> bool:
+            return False
 
 try:
     # 当 scripts 目录在 sys.path 中

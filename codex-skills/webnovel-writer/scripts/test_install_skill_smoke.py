@@ -23,6 +23,9 @@ def test_build_delegate_command_uses_repo_config(tmp_path):
 
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True, exist_ok=True)
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    venv_python.write_text("", encoding="utf-8")
 
     (skill_root / "repo_config.json").write_text(
         json.dumps({"repo_root": str(repo_root)}),
@@ -34,5 +37,6 @@ def test_build_delegate_command_uses_repo_config(tmp_path):
         skill_root=skill_root,
     )
 
+    assert command[0] == str(venv_python)
     assert command[1].endswith("webnovel-writer/scripts/codex_cli.py")
     assert command[-2:] == ["/webnovel-writer:webnovel-write", "1"]

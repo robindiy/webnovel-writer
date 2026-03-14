@@ -17,11 +17,23 @@ def load_repo_config(skill_root: Optional[Path] = None) -> dict:
     return json.loads(config_path.read_text(encoding="utf-8"))
 
 
+def resolve_repo_python(repo_root: Path) -> str:
+    candidates = [
+        repo_root / ".venv" / "bin" / "python",
+        repo_root / ".venv" / "Scripts" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    return str(getattr(sys, "executable", "") or "python3")
+
+
 def build_delegate_command(argv: Sequence[str], *, skill_root: Optional[Path] = None) -> list[str]:
     config = load_repo_config(skill_root)
     repo_root = Path(config["repo_root"]).expanduser().resolve()
     codex_cli = repo_root / "webnovel-writer" / "scripts" / "codex_cli.py"
-    python_exec = str(getattr(sys, "executable", "") or "python3")
+    python_exec = resolve_repo_python(repo_root)
     return [python_exec, str(codex_cli), *list(argv)]
 
 

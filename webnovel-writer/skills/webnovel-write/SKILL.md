@@ -1,6 +1,6 @@
 ---
 name: webnovel-write
-description: Writes webnovel chapters (default 2000-2500 words). Use when the user asks to write a chapter or runs /webnovel-write. Runs context, drafting, review, polish, and data extraction.
+description: Writes webnovel chapters (default target 2500-3500 words). Use when the user asks to write a chapter or runs /webnovel-write. Runs context, drafting, review, polish, and data extraction.
 allowed-tools: Read Write Edit Grep Bash Task
 ---
 
@@ -8,8 +8,8 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 ## 目标
 
-- 以稳定流程产出可发布章节：`正文/第{NNNN}章.md`。
-- 默认章节字数目标：2000-2500（用户或大纲明确覆盖时从其约定）。
+- 以稳定流程产出可发布章节：`正文/第{volume_num}卷/第{chapter_num:03d}章.md`。
+- 默认章节字数目标区间：2500-3500（用户或大纲明确覆盖时从其约定；允许围绕目标浮动，不把单章卡成固定字数）。
 - 保证审查、润色、数据回写完整闭环，避免“写完即丢上下文”。
 - 输出直接可被后续章节消费的结构化数据：`review_metrics`、`summaries`、`chapter_meta`。
 
@@ -20,6 +20,8 @@ allowed-tools: Read Write Edit Grep Bash Task
 3. 参考资料严格按步骤按需加载，不一次性灌入全部文档。
 4. Step 2B 与 Step 4 职责分离：2B 只做风格转译，4 只做问题修复与质控。
 5. 任一步失败优先做最小回滚，不重跑全流程。
+6. 若 `Task`/exec 子程序拆分不可用或不稳定，可退回主程序顺序串行执行；但必须保持 Step 边界不变，且严禁在前一步未完成时启动后一步。
+7. 主程序 fallback 也必须严格串行：`Step 2B` 未完成不得进入 `Step 3`，`Step 3` 未完成不得进入 `Step 4`，以此类推；禁止“先记完成、后补执行”。
 
 ## 模式定义
 
@@ -28,7 +30,7 @@ allowed-tools: Read Write Edit Grep Bash Task
 - `/webnovel-write --minimal`：Step 1 → 2A → 3（仅3个基础审查）→ 4 → 5 → 6
 
 最小产物（所有模式）：
-- `正文/第{NNNN}章.md`
+- `正文/第{volume_num}卷/第{chapter_num:03d}章.md`
 - `index.db.review_metrics` 新纪录（含 `overall_score`）
 - `.webnovel/summaries/ch{NNNN}.md`
 - `.webnovel/state.json` 的进度与 `chapter_meta` 更新
@@ -95,7 +97,8 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 - `Read/Grep`：读取 `state.json`、大纲、章节正文与参考文件。
 - `Bash`：运行 `extract_chapter_context.py`、`index_manager`、`workflow_manager`。
-- `Task`：调用 `context-agent`、审查 subagent、`data-agent` 并行执行。
+- `Task`：优先用于调用 `context-agent`、审查 subagent、`data-agent`。
+- 主程序兜底：若 `Task`/exec 子程序不可用、结果不稳定或 toolchain 不支持，则由主程序按 Step 顺序串行完成对应工作；允许更慢，但不允许跳步。
 
 ## 交互流程
 
@@ -161,10 +164,11 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow co
 - `--step-id` 仅允许：`Step 1` / `Step 2A` / `Step 2B` / `Step 3` / `Step 4` / `Step 5` / `Step 6`。
 - 任何记录失败只记警告，不阻断写作。
 - 每个 Step 执行结束后，同样需要 `complete-step`（失败不阻断）。
+- 不允许跳过中间 Step 直接 `complete-task`；workflow manager 会拒绝缺失必需步骤的完成请求。
 
 ### Step 1：Context Agent（内置 Contract v2，生成直写执行包）
 
-使用 Task 调用 `context-agent`，参数：
+优先使用 Task 调用 `context-agent`；若子程序不可用，则由主程序按同等输入直接产出执行包。参数：
 - `chapter`
 - `project_root`
 - `storage_path=.webnovel/`
@@ -189,8 +193,8 @@ cat "${SKILL_ROOT}/../../references/shared/core-constraints.md"
 ```
 
 硬要求：
-- 只输出纯正文到 `正文/第{chapter_padded}章.md`。
-- 默认按 2000-2500 字执行；若大纲为关键战斗章/高潮章/卷末章或用户明确指定，则按大纲/用户优先。
+- 只输出纯正文到 `正文/第{volume_num}卷/第{chapter_num:03d}章.md`。
+- 默认按 2500-3500 字的区间目标执行；若大纲为关键战斗章/高潮章/卷末章或用户明确指定，则按大纲/用户优先。字数用于控制节奏，不是硬性必须命中某个整数。
 - 禁止占位符正文（如 `[TODO]`、`[待补充]`）。
 - 保留承接关系：若上章有明确钩子，本章必须回应（可部分兑现）。
 
@@ -211,7 +215,7 @@ cat "${SKILL_ROOT}/references/style-adapter.md"
 输出：
 - 风格化正文（覆盖原章节文件）。
 
-### Step 3：审查（auto 路由，必须由 Task 子代理执行）
+### Step 3：审查（auto 路由，优先 Task，可主程序兜底）
 
 执行前加载：
 ```bash
@@ -219,8 +223,9 @@ cat "${SKILL_ROOT}/references/step-3-review-gate.md"
 ```
 
 调用约束：
-- 必须用 `Task` 调用审查 subagent，禁止主流程伪造审查结论。
-- 可并行发起审查，统一汇总 `issues/severity/overall_score`。
+- 优先用 `Task` 调用审查 subagent。
+- 若 `Task`/exec 子程序不可用或不稳定，可由主程序按同一审查标准串行完成各检查器，并在 `notes` 标记 `main_program_fallback_review`。
+- 可并行发起审查；若走主程序兜底，则允许串行执行，统一汇总 `issues/severity/overall_score`。
 - 默认使用 `auto` 路由：根据“本章执行合同 + 正文信号 + 大纲标签”动态选择审查器。
 
 核心审查器（始终执行）：
@@ -267,9 +272,9 @@ cat "${SKILL_ROOT}/references/writing/typesetting.md"
 
 ### Step 5：Data Agent（状态与索引回写）
 
-使用 Task 调用 `data-agent`，参数：
+优先使用 Task 调用 `data-agent`；若子程序不可用，则由主程序直接调用同等数据写回逻辑，参数：
 - `chapter`
-- `chapter_file="正文/第{chapter_padded}章.md"`
+- `chapter_file="正文/第{volume_num}卷/第{chapter_num:03d}章.md"`
 - `review_score=Step 3 overall_score`
 - `project_root`
 - `storage_path=.webnovel/`
@@ -302,7 +307,7 @@ git commit -m "Ch{chapter_num}: {title}"
 
 未满足以下条件前，不得结束流程：
 
-1. 章节正文文件存在且非空：`正文/第{chapter_padded}章.md`
+1. 章节正文文件存在且非空：`正文/第{volume_num}卷/第{chapter_num:03d}章.md`
 2. Step 3 已产出 `overall_score` 且 `review_metrics` 成功落库
 3. Step 4 已处理全部 `critical`，`high` 未修项有 deviation 记录
 4. Step 4 的 `anti_ai_force_check=pass`（基于全文检查；fail 时不得进入 Step 5）
@@ -315,7 +320,7 @@ git commit -m "Ch{chapter_num}: {title}"
 
 ```bash
 test -f "${PROJECT_ROOT}/.webnovel/state.json"
-test -f "${PROJECT_ROOT}/正文/第${chapter_padded}章.md"
+test -f "${PROJECT_ROOT}/正文/第${volume_num}卷/第$(printf '%03d' "${chapter_num}")章.md"
 test -f "${PROJECT_ROOT}/.webnovel/summaries/ch${chapter_padded}.md"
 python "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index get-recent-review-metrics --limit 1
 tail -n 1 "${PROJECT_ROOT}/.webnovel/observability/data_agent_timing.jsonl" || true

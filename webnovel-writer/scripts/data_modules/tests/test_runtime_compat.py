@@ -43,3 +43,22 @@ def test_resolve_python_executable_prefers_current_interpreter(monkeypatch):
     resolved = runtime_compat.resolve_python_executable()
 
     assert resolved == "/tmp/venv/bin/python3.11"
+
+
+def test_ensure_local_pydeps_adds_nearest_match(tmp_path):
+    _ensure_scripts_on_path()
+
+    runtime_compat = importlib.import_module("runtime_compat")
+    pydeps = tmp_path / ".pydeps"
+    pydeps.mkdir()
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+
+    pydeps_str = str(pydeps)
+    if pydeps_str in sys.path:
+        sys.path.remove(pydeps_str)
+
+    found = runtime_compat.ensure_local_pydeps(nested)
+
+    assert found == pydeps
+    assert sys.path[0] == pydeps_str

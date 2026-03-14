@@ -44,6 +44,18 @@ shell fallback：
 webnovel-codex webnovel-init
 ```
 
+安装过 Codex 支持后，也可以直接使用快捷命令：
+
+```bash
+webnovel-init
+```
+
+终端 TUI 模式（适合字段很多、需要键盘选择时）：
+
+```bash
+./scripts/py webnovel-writer/scripts/webnovel.py init --tui
+```
+
 ## `webnovel-plan [卷号]`
 
 用途：生成卷级规划与节拍。

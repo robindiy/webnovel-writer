@@ -19,14 +19,23 @@ def _load_module():
 
 def test_workflow_lifecycle_and_trace(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
 
     module.start_task("webnovel-write", {"chapter_num": 7})
-    module.start_step("Step 1", "Context")
-    module.complete_step("Step 1", json.dumps({"state_json_modified": True}, ensure_ascii=False))
+    for step_id, step_name in [
+        ("Step 1", "Context"),
+        ("Step 2A", "Draft"),
+        ("Step 2B", "Style"),
+        ("Step 3", "Review"),
+        ("Step 4", "Polish"),
+        ("Step 5", "Data"),
+        ("Step 6", "Backup"),
+    ]:
+        module.start_step(step_id, step_name)
+        module.complete_step(step_id, json.dumps({"ok": True}, ensure_ascii=False))
     module.complete_task(json.dumps({"review_completed": True}, ensure_ascii=False))
 
     state = module.load_state()
@@ -44,9 +53,33 @@ def test_workflow_lifecycle_and_trace(tmp_path, monkeypatch):
     assert "task_completed" in events
 
 
+def test_complete_task_rejects_missing_required_steps(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
+
+    webnovel_dir = tmp_path / ".webnovel"
+    webnovel_dir.mkdir(parents=True, exist_ok=True)
+
+    module.start_task("webnovel-write", {"chapter_num": 7})
+    module.start_step("Step 1", "Context")
+    module.complete_step("Step 1", json.dumps({"ok": True}, ensure_ascii=False))
+    module.complete_task(json.dumps({"review_completed": True}, ensure_ascii=False))
+
+    state = module.load_state()
+    assert state["current_task"] is not None
+    assert state["current_task"]["status"] == module.TASK_STATUS_RUNNING
+    assert state["last_stable_state"] is None
+
+    trace_path = module.get_call_trace_path()
+    lines = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rejected = [row for row in lines if row.get("event") == "task_complete_rejected"]
+    assert rejected
+    assert rejected[-1]["payload"]["reason"] == "missing_required_steps"
+
+
 def test_start_task_reentry_increments_retry(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +96,7 @@ def test_start_task_reentry_increments_retry(tmp_path, monkeypatch):
 
 def test_complete_step_rejects_mismatch_step_id(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +114,7 @@ def test_complete_step_rejects_mismatch_step_id(tmp_path, monkeypatch):
 
 def test_workflow_step_owner_and_order_violation_trace(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -96,10 +129,33 @@ def test_workflow_step_owner_and_order_violation_trace(tmp_path, monkeypatch):
     lines = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     events = [row.get("event") for row in lines]
     assert "step_order_violation" in events
-
+    assert "step_start_rejected" in events
     step_started = [row for row in lines if row.get("event") == "step_started"]
-    assert step_started
-    assert step_started[-1].get("payload", {}).get("expected_owner") == "review-agents"
+    assert len(step_started) == 0
+
+
+def test_start_step_rejects_replacing_active_step(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
+
+    webnovel_dir = tmp_path / ".webnovel"
+    webnovel_dir.mkdir(parents=True, exist_ok=True)
+
+    module.start_task("webnovel-write", {"chapter_num": 13})
+    module.start_step("Step 2A", "Draft")
+    module.start_step("Step 3", "Review")
+
+    state = module.load_state()
+    current_step = state["current_task"]["current_step"]
+    assert current_step is not None
+    assert current_step["id"] == "Step 2A"
+    assert len(state["current_task"]["failed_steps"]) == 0
+
+    trace_path = module.get_call_trace_path()
+    lines = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rejected = [row for row in lines if row.get("event") == "step_start_rejected"]
+    assert rejected
+    assert rejected[-1].get("payload", {}).get("reason") == "active_step_in_progress"
 
 
 def test_safe_append_call_trace_logs_failure(monkeypatch, caplog):
@@ -120,7 +176,7 @@ def test_safe_append_call_trace_logs_failure(monkeypatch, caplog):
 
 def test_workflow_reentry_does_not_duplicate_history(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -137,9 +193,30 @@ def test_workflow_reentry_does_not_duplicate_history(tmp_path, monkeypatch):
     assert int(task.get("retry_count", 0)) >= 2
 
 
+def test_get_pending_steps_respects_fast_mode():
+    module = _load_module()
+
+    assert module.get_pending_steps("webnovel-write", {"mode": "fast"}) == [
+        "Step 1",
+        "Step 2A",
+        "Step 3",
+        "Step 4",
+        "Step 5",
+        "Step 6",
+    ]
+    assert module.get_pending_steps("webnovel-write", {"mode": "minimal"}) == [
+        "Step 1",
+        "Step 2A",
+        "Step 3",
+        "Step 4",
+        "Step 5",
+        "Step 6",
+    ]
+
+
 def test_cleanup_artifacts_requires_confirm(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +242,7 @@ def test_cleanup_artifacts_requires_confirm(tmp_path, monkeypatch):
 
 def test_cleanup_artifacts_confirm_deletes_with_backup(tmp_path, monkeypatch):
     module = _load_module()
-    monkeypatch.setattr(module, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "find_project_root", lambda *args, **kwargs: tmp_path)
 
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)

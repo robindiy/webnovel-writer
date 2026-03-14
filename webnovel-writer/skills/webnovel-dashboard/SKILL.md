@@ -29,22 +29,33 @@ if [ -z "${CLAUDE_PLUGIN_ROOT}" ] || [ ! -d "${CLAUDE_PLUGIN_ROOT}/dashboard" ];
   exit 1
 fi
 export DASHBOARD_DIR="${CLAUDE_PLUGIN_ROOT}/dashboard"
+
+if [ -n "${PYTHON_BIN:-}" ]; then
+  export PYTHON_EXEC="${PYTHON_BIN}"
+elif command -v python3 >/dev/null 2>&1; then
+  export PYTHON_EXEC="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+  export PYTHON_EXEC="$(command -v python)"
+else
+  echo "ERROR: 未找到可用的 Python 解释器" >&2
+  exit 1
+fi
 ```
 
 ### Step 1：安装依赖（首次）
 
 ```bash
-python -m pip install -r "${DASHBOARD_DIR}/requirements.txt" --quiet
+"${PYTHON_EXEC}" -m pip install -r "${DASHBOARD_DIR}/requirements.txt" --quiet
 ```
 
 ### Step 2：解析项目根目录并准备 Python 模块路径
 
 ```bash
 export SCRIPTS_DIR="${CLAUDE_PLUGIN_ROOT}/scripts"
-export PROJECT_ROOT="$(python "${SCRIPTS_DIR}/webnovel.py" --project-root "${WORKSPACE_ROOT}" where)"
+export PROJECT_ROOT="$("${PYTHON_EXEC}" "${SCRIPTS_DIR}/webnovel.py" --project-root "${WORKSPACE_ROOT}" where)"
 echo "项目路径: ${PROJECT_ROOT}"
 
-# 确保 `python -m dashboard.server` 可在任意工作目录下找到插件模块
+# 确保 `${PYTHON_EXEC} -m dashboard.server` 可在任意工作目录下找到插件模块
 if [ -n "${PYTHONPATH:-}" ]; then
   export PYTHONPATH="${CLAUDE_PLUGIN_ROOT}:${PYTHONPATH}"
 else
@@ -62,15 +73,27 @@ fi
 ### Step 3：启动 Dashboard
 
 ```bash
-python -m dashboard.server --project-root "${PROJECT_ROOT}"
+export WEBNOVEL_DASHBOARD_HOST="${WEBNOVEL_DASHBOARD_HOST:-127.0.0.1}"
+export WEBNOVEL_DASHBOARD_PORT="${WEBNOVEL_DASHBOARD_PORT:-5678}"
+"${PYTHON_EXEC}" -m dashboard.server --project-root "${PROJECT_ROOT}"
 ```
 
-启动后会自动打开浏览器访问 `http://127.0.0.1:8765`。
+启动后会自动打开浏览器访问 `http://127.0.0.1:5678`。
+
+如果需要外网访问，把 `WEBNOVEL_DASHBOARD_HOST` 改成 `0.0.0.0`，例如：
+
+```bash
+export WEBNOVEL_DASHBOARD_HOST=0.0.0.0
+export WEBNOVEL_DASHBOARD_PORT=5678
+"${PYTHON_EXEC}" -m dashboard.server --project-root "${PROJECT_ROOT}" --no-browser
+```
 
 如不需要自动打开浏览器，使用：
 
 ```bash
-python -m dashboard.server --project-root "${PROJECT_ROOT}" --no-browser
+export WEBNOVEL_DASHBOARD_HOST="${WEBNOVEL_DASHBOARD_HOST:-127.0.0.1}"
+export WEBNOVEL_DASHBOARD_PORT="${WEBNOVEL_DASHBOARD_PORT:-5678}"
+"${PYTHON_EXEC}" -m dashboard.server --project-root "${PROJECT_ROOT}" --no-browser
 ```
 
 ## 注意事项

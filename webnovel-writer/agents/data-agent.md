@@ -50,6 +50,10 @@ model: inherit
   "relationships_new": [
     {"from": "xiaoyan", "to": "hongyi_girl", "type": "相识", "description": "初次见面"}
   ],
+  "foreshadowing": [
+    {"content": "三年之约提及", "action": "埋设", "tier": "支线"},
+    {"content": "青莲地心火线索", "action": "推进", "tier": "核心"}
+  ],
   "scenes_chunked": 4,
   "uncertain": [
     {"mention": "那位前辈", "candidates": [{"type": "角色", "id": "yaolao"}, {"type": "角色", "id": "elder_zhang"}], "confidence": 0.6}
@@ -131,6 +135,10 @@ python "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" where
 - 更新 `protagonist_state`
 - 更新 `strand_tracker`
 - 更新 `disambiguation_warnings/pending`
+- 更新 `plot_threads.foreshadowing`
+  - 优先匹配大纲已规划伏笔（`source=outline`）
+  - 正文阶段默认只做“埋设/推进/回收”的执行态更新
+  - 若已存在规划伏笔但正文抽取到未规划的新伏笔，默认忽略，不写入 state.json
 - **新增 `chapter_meta`**（钩子/模式/结束状态）
 
 ### Step E: 生成章节摘要文件（新增）

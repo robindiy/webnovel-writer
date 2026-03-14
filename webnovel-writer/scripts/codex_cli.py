@@ -123,13 +123,18 @@ def prepare_command(
 def start_dashboard(
     project_root: Union[str, Path],
     *,
-    host: str = "127.0.0.1",
-    port: int = 8765,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
     open_browser: bool = False,
 ) -> dict[str, Any]:
     python_executable = resolve_python_executable()
     env = dict(os.environ)
     env["WEBNOVEL_PROJECT_ROOT"] = str(Path(project_root).resolve())
+    resolved_host = host or str(env.get("WEBNOVEL_DASHBOARD_HOST") or "127.0.0.1")
+    try:
+        resolved_port = int(port if port is not None else env.get("WEBNOVEL_DASHBOARD_PORT", "5678"))
+    except (TypeError, ValueError):
+        resolved_port = 5678
     existing_pythonpath = env.get("PYTHONPATH", "")
     pythonpath_parts = [str(REPO_PACKAGE_ROOT)]
     if existing_pythonpath:
@@ -143,9 +148,9 @@ def start_dashboard(
         "--project-root",
         str(Path(project_root).resolve()),
         "--host",
-        host,
+        resolved_host,
         "--port",
-        str(port),
+        str(resolved_port),
     ]
     if not open_browser:
         command.append("--no-browser")
@@ -160,7 +165,7 @@ def start_dashboard(
     return {
         "status": "started",
         "pid": int(process.pid),
-        "url": f"http://{host}:{port}",
+        "url": f"http://{resolved_host}:{resolved_port}",
         "command": command,
     }
 

@@ -224,6 +224,11 @@ def _inject_volume_rows(template_text: str, target_chapters: int, *, chapters_pe
     return "\n".join(lines[:insert_idx] + rows + lines[insert_idx:])
 
 
+def _volume_directory_names(target_chapters: int, *, chapters_per_volume: int = 50) -> list[str]:
+    volumes = (target_chapters - 1) // chapters_per_volume + 1 if target_chapters > 0 else 1
+    return [f"正文/第{volume}卷" for volume in range(1, volumes + 1)]
+
+
 def init_project(
     project_dir: str,
     title: str,
@@ -278,9 +283,9 @@ def init_project(
         "设定集/物品库",
         "设定集/其他设定",
         "大纲",
-        "正文/第1卷",
         "审查报告",
     ]
+    directories.extend(_volume_directory_names(int(target_chapters)))
     for dir_path in directories:
         (project_path / dir_path).mkdir(parents=True, exist_ok=True)
 

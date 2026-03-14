@@ -3,9 +3,17 @@
  */
 
 const BASE = '';  // 开发时由 vite proxy 代理到 FastAPI
+let projectContext = null
+
+export function setProjectContext(projectPath) {
+    projectContext = projectPath || null
+}
 
 export async function fetchJSON(path, params = {}) {
     const url = new URL(path, window.location.origin);
+    if (projectContext && params.project === undefined) {
+        url.searchParams.set('project', projectContext);
+    }
     Object.entries(params).forEach(([k, v]) => {
         if (v !== undefined && v !== null) url.searchParams.set(k, v);
     });
@@ -22,7 +30,11 @@ export async function fetchJSON(path, params = {}) {
  */
 export function subscribeSSE(onMessage, handlers = {}) {
     const { onOpen, onError } = handlers
-    const es = new EventSource(`${BASE}/api/events`);
+    const url = new URL(`${BASE}/api/events`, window.location.origin)
+    if (projectContext) {
+        url.searchParams.set('project', projectContext)
+    }
+    const es = new EventSource(url.toString());
     es.onopen = () => {
         if (onOpen) onOpen()
     };

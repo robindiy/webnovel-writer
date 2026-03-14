@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 from copy import deepcopy
@@ -26,13 +27,42 @@ from runtime_compat import enable_windows_utf8_stdio
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-import filelock
+
+try:
+    import filelock
+except ImportError:  # pragma: no cover
+    class _NoOpFileLock:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+    class _FileLockCompat:
+        FileLock = _NoOpFileLock
+
+        class Timeout(Exception):
+            pass
+
+    filelock = _FileLockCompat()
 
 from .config import get_config
 from .observability import safe_append_perf_timing, safe_log_tool_call
+from .state_validator import (
+    FORESHADOWING_STATUS_PENDING,
+    FORESHADOWING_STATUS_RESOLVED,
+    normalize_foreshadowing_item,
+)
 
 
 logger = logging.getLogger(__name__)
+
+_FORESHADOWING_TEXT_STRIP_RE = re.compile(r"[\s\u3000，,。.!！？?：:；;、\"'“”‘’（）()《》〈〉【】\[\]—-]+")
+_CHAPTER_TITLE_RE = re.compile(r"^\s*#\s*第\s*\d+\s*章(?:\s*[-—:：]\s*|\s+)(.+?)\s*$", re.MULTILINE)
+_SUMMARY_SECTION_RE = re.compile(r"##\s*(?:剧情摘要|本章摘要)\s*\r?\n(.+?)(?=\r?\n##|$)", re.DOTALL)
 
 try:
     # 当 scripts 目录在 sys.path 中（常见：从 scripts/ 运行）
@@ -40,6 +70,11 @@ try:
 except ImportError:  # pragma: no cover
     # 当以 `python -m scripts.data_modules...` 从仓库根目录运行
     from scripts.security_utils import atomic_write_json, read_json_safe
+
+try:
+    from chapter_paths import find_chapter_file
+except ImportError:  # pragma: no cover
+    from scripts.chapter_paths import find_chapter_file
 
 
 @dataclass
@@ -127,6 +162,7 @@ class StateManager:
         self._pending_disambiguation_pending: List[Dict[str, Any]] = []
         self._pending_progress_chapter: Optional[int] = None
         self._pending_progress_words_delta: int = 0
+        self._pending_foreshadowing: List[Dict[str, Any]] = []
         self._pending_chapter_meta: Dict[str, Any] = {}
 
         # v5.1 引入: 缓存待同步到 SQLite 的数据
@@ -135,7 +171,10 @@ class StateManager:
             "entities_new": [],
             "state_changes": [],
             "relationships_new": [],
-            "chapter": None
+            "scenes": [],
+            "scenes_provided": False,
+            "chapter": None,
+            "chapter_index": None,
         }
 
         self._load_state()
@@ -226,6 +265,7 @@ class StateManager:
                 self._pending_structured_relationships,
                 self._pending_disambiguation_warnings,
                 self._pending_disambiguation_pending,
+                self._pending_foreshadowing,
                 self._pending_chapter_meta,
                 self._pending_progress_chapter is not None,
                 self._pending_progress_words_delta != 0,
@@ -332,6 +372,19 @@ class StateManager:
                     if len(pending_list) > max_keep:
                         disk_state["disambiguation_pending"] = pending_list[-max_keep:]
 
+                if self._pending_foreshadowing:
+                    plot_threads = disk_state.get("plot_threads")
+                    if not isinstance(plot_threads, dict):
+                        plot_threads = {}
+                        disk_state["plot_threads"] = plot_threads
+                    foreshadowing = plot_threads.get("foreshadowing")
+                    if not isinstance(foreshadowing, list):
+                        foreshadowing = []
+                    plot_threads["foreshadowing"] = self._merge_foreshadowing_rows(
+                        foreshadowing,
+                        self._pending_foreshadowing,
+                    )
+
                 # chapter_meta（新增：按章节号覆盖写入）
                 if self._pending_chapter_meta:
                     chapter_meta = disk_state.get("chapter_meta")
@@ -353,6 +406,7 @@ class StateManager:
                 # state.json 侧 pending 已写盘，直接清空
                 self._pending_disambiguation_warnings.clear()
                 self._pending_disambiguation_pending.clear()
+                self._pending_foreshadowing.clear()
                 self._pending_chapter_meta.clear()
                 self._pending_progress_chapter = None
                 self._pending_progress_words_delta = 0
@@ -403,9 +457,131 @@ class StateManager:
                 logger.warning("SQLite sync failed (process_chapter_entities): %s", exc)
                 return False
 
+        chapter_index = sqlite_data.get("chapter_index")
+        if isinstance(chapter_index, dict):
+            try:
+                self._upsert_chapter_index_snapshot(chapter_index)
+            except Exception as exc:
+                logger.warning("SQLite sync failed (chapter_index): %s", exc)
+                return False
+
+        if sqlite_data.get("scenes_provided"):
+            try:
+                self._upsert_chapter_scenes(
+                    chapter=chapter,
+                    scenes=sqlite_data.get("scenes", []),
+                )
+            except Exception as exc:
+                logger.warning("SQLite sync failed (chapter_scenes): %s", exc)
+                return False
+
         # 方式2: 使用 add_entity/update_entity 收集的增量数据。
         # 数据缓存在 _pending_entity_patches 等变量中。
         return self._sync_pending_patches_to_sqlite(processed_appearances)
+
+    def _upsert_chapter_index_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        if not self._sql_state_manager:
+            return
+
+        from .index_manager import ChapterMeta
+
+        index_manager = self._sql_state_manager._index_manager
+        chapter = int(snapshot.get("chapter") or 0)
+        if chapter <= 0:
+            return
+
+        existing = index_manager.get_chapter(chapter) or {}
+        existing_characters = existing.get("characters") if isinstance(existing.get("characters"), list) else []
+        incoming_characters = snapshot.get("characters") if isinstance(snapshot.get("characters"), list) else []
+
+        merged_characters: List[str] = []
+        seen: set[str] = set()
+        for entity_id in [*existing_characters, *incoming_characters]:
+            normalized = str(entity_id or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            merged_characters.append(normalized)
+            seen.add(normalized)
+
+        title = str(snapshot.get("title") or existing.get("title") or f"第{chapter}章").strip()
+        location = str(snapshot.get("location") or existing.get("location") or "").strip()
+        summary = str(snapshot.get("summary") or existing.get("summary") or "").strip()
+
+        try:
+            word_count = int(snapshot.get("word_count") or existing.get("word_count") or 0)
+        except (TypeError, ValueError):
+            word_count = int(existing.get("word_count") or 0)
+
+        index_manager.add_chapter(
+            ChapterMeta(
+                chapter=chapter,
+                title=title,
+                location=location,
+                word_count=word_count,
+                characters=merged_characters,
+                summary=summary,
+            )
+        )
+
+    def _upsert_chapter_scenes(self, chapter: Any, scenes: Any) -> None:
+        if not self._sql_state_manager:
+            return
+
+        from .index_manager import SceneMeta
+
+        try:
+            chapter_num = int(chapter or 0)
+        except (TypeError, ValueError):
+            return
+        if chapter_num <= 0:
+            return
+
+        if not isinstance(scenes, list):
+            scenes = []
+
+        def _to_int(value: Any) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        scene_metas: List[SceneMeta] = []
+        for fallback_index, scene in enumerate(scenes, start=1):
+            if not isinstance(scene, dict):
+                continue
+
+            raw_index = scene.get("index", scene.get("scene_index"))
+            try:
+                scene_index = int(raw_index)
+            except (TypeError, ValueError):
+                scene_index = fallback_index
+            if scene_index <= 0:
+                scene_index = fallback_index
+
+            raw_characters = scene.get("characters")
+            characters: List[str] = []
+            seen: set[str] = set()
+            if isinstance(raw_characters, list):
+                for entity_id in raw_characters:
+                    normalized = str(entity_id or "").strip()
+                    if not normalized or normalized in seen:
+                        continue
+                    characters.append(normalized)
+                    seen.add(normalized)
+
+            scene_metas.append(
+                SceneMeta(
+                    chapter=chapter_num,
+                    scene_index=scene_index,
+                    start_line=_to_int(scene.get("start_line")),
+                    end_line=_to_int(scene.get("end_line")),
+                    location=str(scene.get("location") or "").strip(),
+                    summary=str(scene.get("summary") or "").strip(),
+                    characters=characters,
+                )
+            )
+
+        self._sql_state_manager._index_manager.add_scenes(chapter_num, scene_metas)
 
     def _sync_pending_patches_to_sqlite(self, processed_appearances: set = None) -> bool:
         """同步 _pending_entity_patches 等到 SQLite（v5.1 引入，v5.4 沿用）
@@ -581,7 +757,10 @@ class StateManager:
             "entities_new": [],
             "state_changes": [],
             "relationships_new": [],
+            "scenes": [],
+            "scenes_provided": False,
             "chapter": None,
+            "chapter_index": None,
         })
 
     def _clear_pending_sqlite_data(self):
@@ -591,7 +770,10 @@ class StateManager:
             "entities_new": [],
             "state_changes": [],
             "relationships_new": [],
-            "chapter": None
+            "scenes": [],
+            "scenes_provided": False,
+            "chapter": None,
+            "chapter_index": None,
         }
 
     # ==================== 进度管理 ====================
@@ -1025,6 +1207,9 @@ class StateManager:
 
         # v5.1 引入: 记录章节号用于 SQLite 同步
         self._pending_sqlite_data["chapter"] = chapter
+        self._pending_sqlite_data["chapter_index"] = self._build_chapter_index_snapshot(chapter, result)
+        self._pending_sqlite_data["scenes"] = []
+        self._pending_sqlite_data["scenes_provided"] = False
 
         # 处理出场实体
         for entity in result.get("entities_appeared", []):
@@ -1081,6 +1266,32 @@ class StateManager:
         # 处理消歧不确定项（不影响实体写入，但必须对 Writer 可见）
         warnings.extend(self._record_disambiguation(chapter, result.get("uncertain", [])))
 
+        normalized_foreshadowing: List[Dict[str, Any]] = []
+        for item in result.get("foreshadowing", []):
+            normalized_item = self._normalize_foreshadowing_row(chapter, item)
+            if normalized_item:
+                normalized_foreshadowing.append(normalized_item)
+
+        if normalized_foreshadowing:
+            plot_threads = self._state.setdefault("plot_threads", {})
+            foreshadowing = plot_threads.get("foreshadowing")
+            if not isinstance(foreshadowing, list):
+                foreshadowing = []
+            planned_mode = self._has_outline_foreshadowing(foreshadowing)
+            accepted_items: List[Dict[str, Any]] = []
+            for item in normalized_foreshadowing:
+                if planned_mode and self._find_matching_foreshadowing_index(foreshadowing, item) is None:
+                    warnings.append(f"未匹配到规划伏笔，已忽略: {item['content']}")
+                    continue
+                accepted_items.append(item)
+
+            if accepted_items:
+                plot_threads["foreshadowing"] = self._merge_foreshadowing_rows(
+                    foreshadowing,
+                    accepted_items,
+                )
+                self._pending_foreshadowing.extend(accepted_items)
+
         # 写入 chapter_meta（钩子/模式/结束状态）
         chapter_meta = result.get("chapter_meta")
         if isinstance(chapter_meta, dict):
@@ -1089,6 +1300,14 @@ class StateManager:
             self._state["chapter_meta"][meta_key] = chapter_meta
             self._pending_chapter_meta[meta_key] = chapter_meta
 
+        raw_scenes = result.get("scenes")
+        if raw_scenes is not None:
+            self._pending_sqlite_data["scenes_provided"] = True
+            if isinstance(raw_scenes, list):
+                self._pending_sqlite_data["scenes"] = [
+                    scene for scene in raw_scenes if isinstance(scene, dict)
+                ]
+
         # 更新进度
         self.update_progress(chapter)
 
@@ -1096,6 +1315,284 @@ class StateManager:
         self.sync_protagonist_from_entity()
 
         return warnings
+
+    def _build_chapter_index_snapshot(self, chapter: int, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        chapter_file = find_chapter_file(self.config.project_root, chapter)
+        content = ""
+        if chapter_file and chapter_file.exists():
+            try:
+                content = chapter_file.read_text(encoding="utf-8")
+            except OSError:
+                content = ""
+
+        title = self._extract_chapter_title(chapter, content, chapter_file)
+        location = self._resolve_chapter_location(chapter, result)
+        word_count = self._count_chapter_words(content)
+        characters = self._collect_chapter_character_ids(chapter, result)
+        summary = self._load_chapter_summary(chapter, content)
+
+        if not any([title, location, word_count, characters, summary]):
+            return None
+
+        return {
+            "chapter": int(chapter),
+            "title": title,
+            "location": location,
+            "word_count": word_count,
+            "characters": characters,
+            "summary": summary,
+        }
+
+    def _extract_chapter_title(self, chapter: int, content: str, chapter_file: Optional[Path]) -> str:
+        if content:
+            match = _CHAPTER_TITLE_RE.search(content)
+            if match:
+                return str(match.group(1) or "").strip()
+
+            for line in content.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("#"):
+                    continue
+                text = re.sub(r"^\s*#+\s*", "", stripped).strip()
+                text = re.sub(r"^第\s*\d+\s*章(?:\s*[-—:：]\s*|\s+)?", "", text).strip()
+                if text:
+                    return text
+
+        if chapter_file is not None:
+            stem = chapter_file.stem
+            parts = re.split(r"[-—:：]", stem, maxsplit=1)
+            if len(parts) == 2 and parts[1].strip():
+                return parts[1].strip()
+
+        return f"第{int(chapter):04d}章"
+
+    def _count_chapter_words(self, content: str) -> int:
+        if not content:
+            return 0
+        text = re.sub(r"```[\s\S]*?```", "", content)
+        text = re.sub(r"^\s*#+\s+.*$", "", text, flags=re.MULTILINE)
+        text = re.sub(r"^\s*---+\s*$", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\s+", "", text)
+        return len(text)
+
+    def _extract_summary_section(self, text: str) -> str:
+        if not text:
+            return ""
+        match = _SUMMARY_SECTION_RE.search(text)
+        if not match:
+            return ""
+        return str(match.group(1) or "").strip()
+
+    def _load_chapter_summary(self, chapter: int, chapter_content: str) -> str:
+        summary_path = self.config.webnovel_dir / "summaries" / f"ch{int(chapter):04d}.md"
+        if summary_path.exists():
+            try:
+                summary = self._extract_summary_section(summary_path.read_text(encoding="utf-8"))
+                if summary:
+                    return summary
+            except OSError:
+                pass
+
+        return self._extract_summary_section(chapter_content)
+
+    def _collect_chapter_character_ids(self, chapter: int, result: Dict[str, Any]) -> List[str]:
+        seen: set[str] = set()
+        characters: List[str] = []
+
+        def _append(entity_id: Any) -> None:
+            normalized = str(entity_id or "").strip()
+            if not normalized or normalized in seen:
+                return
+            characters.append(normalized)
+            seen.add(normalized)
+
+        for entity in result.get("entities_appeared", []):
+            if str(entity.get("type") or "").strip() == "角色":
+                _append(entity.get("id"))
+
+        for entity in result.get("entities_new", []):
+            if str(entity.get("type") or "").strip() == "角色":
+                _append(entity.get("suggested_id") or entity.get("id"))
+
+        if characters:
+            return characters
+
+        if self._sql_state_manager:
+            existing = self._sql_state_manager._index_manager.get_chapter(chapter)
+            existing_characters = existing.get("characters") if isinstance(existing, dict) else None
+            if isinstance(existing_characters, list):
+                for entity_id in existing_characters:
+                    _append(entity_id)
+
+            for appearance in self._sql_state_manager._index_manager.get_chapter_appearances(chapter):
+                entity_id = appearance.get("entity_id")
+                if not entity_id:
+                    continue
+                entity = self._sql_state_manager._index_manager.get_entity(entity_id)
+                if entity and str(entity.get("type") or "").strip() == "角色":
+                    _append(entity_id)
+
+        return characters
+
+    def _resolve_chapter_location(self, chapter: int, result: Dict[str, Any]) -> str:
+        chapter_meta = result.get("chapter_meta")
+        if isinstance(chapter_meta, dict):
+            ending = chapter_meta.get("ending")
+            if isinstance(ending, dict):
+                location = str(ending.get("location") or "").strip()
+                if location:
+                    return location
+
+        stored_meta = self._state.get("chapter_meta", {})
+        if isinstance(stored_meta, dict):
+            entry = stored_meta.get(f"{int(chapter):04d}") or stored_meta.get(str(int(chapter)))
+            if isinstance(entry, dict):
+                ending = entry.get("ending")
+                if isinstance(ending, dict):
+                    location = str(ending.get("location") or "").strip()
+                    if location:
+                        return location
+
+        protagonist_location = self._state.get("protagonist_state", {}).get("location")
+        if isinstance(protagonist_location, dict):
+            location = str(protagonist_location.get("current") or "").strip()
+            if location:
+                return location
+        elif protagonist_location:
+            location = str(protagonist_location).strip()
+            if location:
+                return location
+
+        if self._sql_state_manager:
+            existing = self._sql_state_manager._index_manager.get_chapter(chapter)
+            if isinstance(existing, dict):
+                location = str(existing.get("location") or "").strip()
+                if location:
+                    return location
+
+        return ""
+
+    def _normalize_foreshadowing_row(self, chapter: int, item: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(item, str):
+            item = {"content": item}
+        if not isinstance(item, dict):
+            return None
+
+        raw_action = str(item.get("action") or "").strip().lower()
+        normalized = normalize_foreshadowing_item(item)
+
+        content = str(normalized.get("content") or normalized.get("description") or "").strip()
+        if not content:
+            return None
+        normalized["content"] = content
+
+        if raw_action in {"回收", "兑现", "resolve", "resolved"} or normalized.get("status") == FORESHADOWING_STATUS_RESOLVED:
+            normalized["status"] = FORESHADOWING_STATUS_RESOLVED
+            normalized.setdefault("resolved_chapter", chapter)
+        else:
+            normalized["status"] = FORESHADOWING_STATUS_PENDING
+            normalized.setdefault("planted_chapter", chapter)
+
+        return normalized
+
+    def _normalize_foreshadowing_text(self, text: Any) -> str:
+        return _FORESHADOWING_TEXT_STRIP_RE.sub("", str(text or "").strip())
+
+    def _foreshadowing_similarity(self, left: str, right: str) -> float:
+        if not left or not right:
+            return 0.0
+        if left == right:
+            return 1.0
+        if left in right or right in left:
+            return 0.92
+
+        left_bigrams = {left[i : i + 2] for i in range(max(0, len(left) - 1))} or {left}
+        right_bigrams = {right[i : i + 2] for i in range(max(0, len(right) - 1))} or {right}
+        union = left_bigrams | right_bigrams
+        if not union:
+            return 0.0
+        bigram_score = len(left_bigrams & right_bigrams) / len(union)
+
+        prev_row = [0] * (len(right) + 1)
+        longest = 0
+        for left_char in left:
+            current_row = [0] * (len(right) + 1)
+            for idx, right_char in enumerate(right, start=1):
+                if left_char == right_char:
+                    current_row[idx] = prev_row[idx - 1] + 1
+                    longest = max(longest, current_row[idx])
+            prev_row = current_row
+
+        lcs_score = longest / max(1, min(len(left), len(right)))
+        return max(bigram_score, lcs_score)
+
+    def _find_matching_foreshadowing_index(self, rows: List[Dict[str, Any]], item: Dict[str, Any]) -> Optional[int]:
+        content = self._normalize_foreshadowing_text(item.get("content"))
+        if not content:
+            return None
+
+        best_idx: Optional[int] = None
+        best_score = 0.0
+        for idx, row in enumerate(rows):
+            row_content = self._normalize_foreshadowing_text(row.get("content"))
+            score = self._foreshadowing_similarity(content, row_content)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        if best_score >= 0.35:
+            return best_idx
+        return None
+
+    def _has_outline_foreshadowing(self, rows: List[Dict[str, Any]]) -> bool:
+        return any(str(row.get("source") or "").strip() == "outline" for row in rows if isinstance(row, dict))
+
+    def _merge_foreshadowing_rows(self, base_rows: Any, new_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+
+        if isinstance(base_rows, list):
+            for raw_row in base_rows:
+                if not isinstance(raw_row, dict):
+                    continue
+                normalized = normalize_foreshadowing_item(raw_row)
+                content = str(normalized.get("content") or "").strip()
+                if not content:
+                    continue
+                normalized["content"] = content
+                rows.append(normalized)
+
+        for raw_row in new_rows:
+            if not isinstance(raw_row, dict):
+                continue
+            normalized = normalize_foreshadowing_item(raw_row)
+            content = str(normalized.get("content") or "").strip()
+            if not content:
+                continue
+            normalized["content"] = content
+
+            existing_idx = self._find_matching_foreshadowing_index(rows, normalized)
+            if existing_idx is None:
+                rows.append(normalized)
+                continue
+
+            merged = dict(rows[existing_idx])
+            incoming = dict(normalized)
+            incoming.pop("content", None)
+            if incoming.get("source") != "outline":
+                if merged.get("tier"):
+                    incoming.pop("tier", None)
+                if merged.get("planted_chapter") is not None:
+                    incoming.pop("planted_chapter", None)
+                if merged.get("target_chapter") is not None:
+                    incoming.pop("target_chapter", None)
+            merged.update(incoming)
+            if "planted_chapter" not in normalized and rows[existing_idx].get("planted_chapter") is not None:
+                merged["planted_chapter"] = rows[existing_idx]["planted_chapter"]
+            if "resolved_chapter" not in normalized and rows[existing_idx].get("resolved_chapter") is not None:
+                merged["resolved_chapter"] = rows[existing_idx]["resolved_chapter"]
+            rows[existing_idx] = normalize_foreshadowing_item(merged)
+
+        return rows
 
     # ==================== 导出 ====================
 
@@ -1218,15 +1715,37 @@ class StateManager:
             self.update_entity(entity_id, updates, "角色")
 
 
+def refresh_health_report(project_root: Path) -> Optional[str]:
+    try:
+        from status_reporter import StatusReporter
+    except ImportError:  # pragma: no cover
+        try:
+            from scripts.status_reporter import StatusReporter
+        except ImportError as exc:  # pragma: no cover
+            return f"健康报告刷新失败: {exc}"
+
+    try:
+        reporter = StatusReporter(str(project_root))
+        if not reporter.load_state():
+            return "健康报告刷新失败: 无法加载 state.json"
+        reporter.scan_chapters()
+        report = reporter.generate_report("all")
+        output_path = Path(project_root) / ".webnovel" / "health_report.md"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report, encoding="utf-8")
+    except Exception as exc:  # pragma: no cover
+        return f"健康报告刷新失败: {exc}"
+
+    return None
+
+
 # ==================== CLI 接口 ====================
 
 def main():
     import argparse
     import sys
-    from pydantic import ValidationError
     from .cli_output import print_success, print_error
     from .cli_args import normalize_global_project_root, load_json_arg
-    from .schemas import validate_data_agent_output, format_validation_error, normalize_data_agent_output
     from .index_manager import IndexManager
 
     parser = argparse.ArgumentParser(description="State Manager CLI (v5.4)")
@@ -1319,6 +1838,18 @@ def main():
         emit_success(payload, message="entities")
 
     elif args.command == "process-chapter":
+        try:
+            from pydantic import ValidationError
+            from .schemas import validate_data_agent_output, format_validation_error, normalize_data_agent_output
+        except ModuleNotFoundError as exc:
+            emit_error(
+                "MISSING_DEPENDENCY",
+                f"缺少依赖: {exc.name}",
+                suggestion="请安装 state process-chapter 所需依赖（例如 pydantic）后重试",
+                chapter=args.chapter,
+            )
+            return
+
         data = load_json_arg(args.data)
         validated = None
         last_exc = None
@@ -1341,6 +1872,9 @@ def main():
 
         warnings = manager.process_chapter_result(args.chapter, validated.model_dump(by_alias=True))
         manager.save_state()
+        refresh_warning = refresh_health_report(manager.config.project_root)
+        if refresh_warning:
+            warnings.append(refresh_warning)
         emit_success({"chapter": args.chapter, "warnings": warnings}, message="chapter_processed", chapter=args.chapter)
 
     else:

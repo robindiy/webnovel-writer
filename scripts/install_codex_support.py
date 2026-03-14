@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import shutil
+import shlex
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,12 @@ SKILL_SOURCE_ROOT = REPO_ROOT / "codex-skills" / "webnovel-writer"
 WRAPPER_TEMPLATE = REPO_ROOT / "scripts" / "webnovel-codex"
 RESTORE_SCRIPT = REPO_ROOT / "scripts" / "restore_codex_support.py"
 SUPPORT_ROOT_NAME = "webnovel-writer"
+SHORTCUT_SPECS = {
+    "webnovel-init": {
+        "helper_rel_path": Path("webnovel-writer") / "scripts" / "webnovel.py",
+        "fixed_args": ("init", "--tui"),
+    },
+}
 
 
 def _default_codex_home() -> Path:
@@ -72,10 +79,15 @@ def _write_install_state(codex_home: Path, payload: dict) -> Path:
     return path
 
 
-def _install_wrapper(wrapper_target: Path, helper_path: Path) -> Path:
+def _render_fixed_args(args: tuple[str, ...]) -> str:
+    return " ".join(shlex.quote(str(arg)) for arg in args)
+
+
+def _install_wrapper(wrapper_target: Path, helper_path: Path, *, fixed_args: tuple[str, ...] = ()) -> Path:
     wrapper_target.parent.mkdir(parents=True, exist_ok=True)
     template = WRAPPER_TEMPLATE.read_text(encoding="utf-8")
     rendered = template.replace("__HELPER_PATH__", str(helper_path))
+    rendered = rendered.replace("__FIXED_ARGS__", _render_fixed_args(fixed_args))
     wrapper_target.write_text(rendered, encoding="utf-8")
     wrapper_target.chmod(wrapper_target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return wrapper_target
@@ -85,13 +97,16 @@ def install_codex_support(
     *,
     codex_home: Optional[Union[str, Path]] = None,
     repo_root: Optional[Union[str, Path]] = None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     resolved_codex_home = Path(codex_home).expanduser().resolve() if codex_home else _default_codex_home()
     resolved_repo_root = Path(repo_root).expanduser().resolve() if repo_root else REPO_ROOT
 
     skill_target = resolved_codex_home / "skills" / SUPPORT_ROOT_NAME
     wrapper_target = resolved_codex_home / "bin" / "webnovel-codex"
     restore_wrapper_target = resolved_codex_home / "bin" / "webnovel-codex-restore"
+    shortcut_wrapper_targets = {
+        name: resolved_codex_home / "bin" / name for name in SHORTCUT_SPECS
+    }
     backup_dir = _backups_root(resolved_codex_home) / _timestamp()
 
     previous_install = {
@@ -107,6 +122,10 @@ def install_codex_support(
             restore_wrapper_target,
             backup_dir / "bin" / "webnovel-codex-restore",
         ),
+        "shortcut_wrappers_backed_up": {
+            name: _backup_path_if_exists(target, backup_dir / "bin" / name)
+            for name, target in shortcut_wrapper_targets.items()
+        },
     }
 
     if skill_target.exists():
@@ -114,8 +133,19 @@ def install_codex_support(
     shutil.copytree(SKILL_SOURCE_ROOT, skill_target)
 
     repo_config = _write_repo_config(skill_target, resolved_repo_root)
-    wrapper_path = _install_wrapper(wrapper_target, skill_target / "scripts" / "run_webnovel_command.py")
+    wrapper_path = _install_wrapper(
+        wrapper_target,
+        skill_target / "scripts" / "run_webnovel_command.py",
+    )
     restore_wrapper_path = _install_wrapper(restore_wrapper_target, RESTORE_SCRIPT)
+    shortcut_wrapper_paths = {
+        name: _install_wrapper(
+            shortcut_wrapper_targets[name],
+            resolved_repo_root / Path(spec["helper_rel_path"]),
+            fixed_args=tuple(spec["fixed_args"]),
+        )
+        for name, spec in SHORTCUT_SPECS.items()
+    }
     install_state = _write_install_state(
         resolved_codex_home,
         {
@@ -126,6 +156,9 @@ def install_codex_support(
                 "skill_root": str(skill_target),
                 "wrapper_path": str(wrapper_path),
                 "restore_wrapper_path": str(restore_wrapper_path),
+                "shortcut_wrapper_paths": {
+                    name: str(path) for name, path in shortcut_wrapper_paths.items()
+                },
             },
             "previous_install": previous_install,
         },
@@ -137,6 +170,7 @@ def install_codex_support(
         "repo_config": str(repo_config),
         "wrapper_path": str(wrapper_path),
         "restore_wrapper_path": str(restore_wrapper_path),
+        "shortcut_wrapper_paths": {name: str(path) for name, path in shortcut_wrapper_paths.items()},
         "install_state": str(install_state),
     }
 

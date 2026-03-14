@@ -238,8 +238,9 @@ def build_guidance_items(
         )
 
     review_trend = reader_signal.get("review_trend") or {}
+    review_count = int(review_trend.get("count") or 0)
     overall_avg = review_trend.get("overall_avg")
-    if isinstance(overall_avg, (int, float)) and float(overall_avg) < low_score_threshold:
+    if review_count > 0 and isinstance(overall_avg, (int, float)) and float(overall_avg) < low_score_threshold:
         guidance.append(
             f"最近审查均分{overall_avg:.1f}低于阈值{low_score_threshold:.1f}，建议先保稳：减少跳场、每段补动作结果闭环。"
         )
@@ -453,6 +454,10 @@ def is_checklist_item_completed(item: Dict[str, Any], reader_signal: Dict[str, A
     item_id = str(item.get("id") or "")
     if item_id in {"fix_low_score_range", "readability_loop"}:
         review_trend = reader_signal.get("review_trend") or {}
+        review_count = int(review_trend.get("count") or 0)
+        if review_count <= 0:
+            # 冷启动章节没有历史审查数据时，不能把“无数据”当成“未完成”。
+            return True
         overall = review_trend.get("overall_avg")
         return isinstance(overall, (int, float)) and float(overall) >= 75.0
 

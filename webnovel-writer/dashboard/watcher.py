@@ -80,12 +80,12 @@ class FileWatcher:
 
     # --- 生命周期 ---
 
-    def start(self, watch_dir: Path, loop: asyncio.AbstractEventLoop):
+    def start(self, watch_dir: Path, loop: asyncio.AbstractEventLoop, *, recursive: bool = False):
         """启动 watchdog observer，监听 watch_dir。"""
         self._loop = loop
         handler = _WebnovelFileHandler(self._on_change)
         self._observer = Observer()
-        self._observer.schedule(handler, str(watch_dir), recursive=False)
+        self._observer.schedule(handler, str(watch_dir), recursive=recursive)
         self._observer.daemon = True
         self._observer.start()
 

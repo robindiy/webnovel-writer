@@ -2,9 +2,40 @@
 set -euo pipefail
 
 HELPER_PATH="__HELPER_PATH__"
+FIXED_ARGS=(__FIXED_ARGS__)
+
+resolve_repo_root() {
+  local helper_dir
+  local package_root
+  local repo_config
+  local repo_root
+  local candidate
+
+  helper_dir="$(cd -- "$(dirname -- "$HELPER_PATH")" && pwd)"
+  package_root="$(cd -- "$helper_dir/.." && pwd)"
+  repo_config="$package_root/repo_config.json"
+
+  if [[ -f "$repo_config" ]]; then
+    repo_root="$(sed -n 's/^[[:space:]]*"repo_root":[[:space:]]*"\(.*\)",\{0,1\}[[:space:]]*$/\1/p' "$repo_config" | head -n 1)"
+    if [[ -n "$repo_root" ]]; then
+      printf '%s\n' "$repo_root"
+      return 0
+    fi
+  fi
+
+  candidate="$(cd -- "$helper_dir/../.." && pwd)"
+  if [[ -x "$candidate/.venv/bin/python" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
 
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   PYTHON_EXEC="$PYTHON_BIN"
+elif REPO_ROOT="$(resolve_repo_root 2>/dev/null)" && [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  PYTHON_EXEC="$REPO_ROOT/.venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
   PYTHON_EXEC="python3"
 elif command -v python >/dev/null 2>&1; then
@@ -14,4 +45,4 @@ else
   exit 1
 fi
 
-exec "$PYTHON_EXEC" "$HELPER_PATH" "$@"
+exec "$PYTHON_EXEC" "$HELPER_PATH" "${FIXED_ARGS[@]}" "$@"

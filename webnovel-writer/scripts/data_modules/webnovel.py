@@ -188,7 +188,14 @@ def main() -> None:
     p_archive = sub.add_parser("archive", help="转发到 archive_manager.py")
     p_archive.add_argument("args", nargs=argparse.REMAINDER)
 
-    p_init = sub.add_parser("init", help="转发到 init_project.py（初始化项目）")
+    p_init = sub.add_parser("init", help="转发到 init_project.py（初始化项目）；`--tui` 启动终端向导")
+    p_init.add_argument("--tui", action="store_true", help="使用终端 TUI 初始化向导")
+    p_init.add_argument("--workspace-root", default=None, help="TUI 预填工作区目录")
+    p_init.add_argument("--project-dir", default=None, help="TUI 预填项目目录")
+    p_init.add_argument("--title", default=None, help="TUI 预填书名")
+    p_init.add_argument("--genre", default=None, help="TUI 预填题材")
+    p_init.add_argument("--target-words", type=int, default=None, help="TUI 预填目标总字数")
+    p_init.add_argument("--target-chapters", type=int, default=None, help="TUI 预填目标章节数")
     p_init.add_argument("args", nargs=argparse.REMAINDER)
 
     p_extract_context = sub.add_parser("extract-context", help="转发到 extract_chapter_context.py")
@@ -215,6 +222,21 @@ def main() -> None:
 
     # init 是创建项目，不应该依赖/注入已存在 project_root
     if tool == "init":
+        if getattr(args, "tui", False):
+            tui_args: list[str] = []
+            tui_options = (
+                ("--workspace-root", getattr(args, "workspace_root", None)),
+                ("--project-dir", getattr(args, "project_dir", None)),
+                ("--title", getattr(args, "title", None)),
+                ("--genre", getattr(args, "genre", None)),
+                ("--target-words", getattr(args, "target_words", None)),
+                ("--target-chapters", getattr(args, "target_chapters", None)),
+            )
+            for option, value in tui_options:
+                if value is None:
+                    continue
+                tui_args.extend([option, str(value)])
+            raise SystemExit(_run_script("init_tui.py", [*tui_args, *rest]))
         raise SystemExit(_run_script("init_project.py", rest))
 
     # 其余工具：统一解析 project_root 后前置给下游

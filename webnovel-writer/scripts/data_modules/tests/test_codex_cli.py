@@ -76,10 +76,39 @@ def test_start_dashboard_uses_resolved_python(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "resolve_python_executable", lambda: "/usr/bin/python3")
     monkeypatch.setattr(module.subprocess, "Popen", _fake_popen)
 
-    result = module.start_dashboard(tmp_path, host="127.0.0.1", port=8765, open_browser=False)
+    result = module.start_dashboard(tmp_path, host="127.0.0.1", port=5678, open_browser=False)
 
     assert result["status"] == "started"
     assert result["pid"] == 12345
     assert calls["cmd"][:3] == ["/usr/bin/python3", "-m", "dashboard.server"]
     assert calls["kwargs"]["cwd"] == str(module.REPO_PACKAGE_ROOT)
     assert str(module.REPO_PACKAGE_ROOT) in calls["kwargs"]["env"]["PYTHONPATH"]
+
+
+def test_start_dashboard_uses_env_host_and_port(monkeypatch, tmp_path):
+    module = _load_module()
+
+    calls = {}
+
+    class _FakeProcess:
+        pid = 67890
+
+    def _fake_popen(cmd, **kwargs):
+        calls["cmd"] = list(cmd)
+        calls["kwargs"] = kwargs
+        return _FakeProcess()
+
+    monkeypatch.setattr(module, "resolve_python_executable", lambda: "/usr/bin/python3")
+    monkeypatch.setattr(module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setenv("WEBNOVEL_DASHBOARD_HOST", "0.0.0.0")
+    monkeypatch.setenv("WEBNOVEL_DASHBOARD_PORT", "6789")
+
+    result = module.start_dashboard(tmp_path, open_browser=False)
+
+    assert result["status"] == "started"
+    assert result["pid"] == 67890
+    assert result["url"] == "http://0.0.0.0:6789"
+    assert "--host" in calls["cmd"]
+    assert "--port" in calls["cmd"]
+    assert "0.0.0.0" in calls["cmd"]
+    assert "6789" in calls["cmd"]

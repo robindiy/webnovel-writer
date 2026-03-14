@@ -2,8 +2,9 @@
 
 ## 调用约束（硬规则）
 
-- 必须使用 `Task` 调用审查 subagent，禁止主流程直接内联“自审结论”。
-- 审查任务可并行发起，必须在全部返回后统一聚合。
+- 优先使用 `Task` 调用审查 subagent。
+- 若 `Task`/exec 子程序不可用或不稳定，可由主程序按相同 checker 标准顺序执行，并在审查 `notes` 中显式写入 `main_program_fallback_review`。
+- 审查任务可并行发起；若走主程序兜底，则允许串行执行，但必须在全部结果齐全后统一聚合。
 - `overall_score` 必须来自聚合结果，不可主观估分。
 - 单章写作场景下，统一传入：`{chapter, chapter_file, project_root}`。
 

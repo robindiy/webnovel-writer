@@ -64,6 +64,28 @@ class UncertainMention(BaseModel):
     adopted: Optional[str] = None
 
 
+class ForeshadowingItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    content: Optional[str] = None
+    description: Optional[str] = None
+    status: str = "未回收"
+    tier: str = "支线"
+    action: Optional[str] = None
+
+
+class SceneItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    index: Optional[int] = None
+    scene_index: Optional[int] = None
+    start_line: int = 0
+    end_line: int = 0
+    location: str = ""
+    summary: str = ""
+    characters: List[str] = Field(default_factory=list)
+
+
 class DataAgentOutput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -71,6 +93,8 @@ class DataAgentOutput(BaseModel):
     entities_new: List[EntityNew] = Field(default_factory=list)
     state_changes: List[StateChange] = Field(default_factory=list)
     relationships_new: List[RelationshipNew] = Field(default_factory=list)
+    foreshadowing: List[ForeshadowingItem] = Field(default_factory=list)
+    scenes: Optional[List[SceneItem]] = None
     scenes_chunked: int = 0
     uncertain: List[UncertainMention] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
@@ -120,6 +144,37 @@ def normalize_data_agent_output(payload: Dict[str, Any]) -> Dict[str, Any]:
         "warnings",
     ]:
         _ensure_list(key)
+
+    foreshadowing = payload.get("foreshadowing")
+    if foreshadowing is None:
+        payload["foreshadowing"] = []
+    elif isinstance(foreshadowing, dict):
+        payload["foreshadowing"] = [foreshadowing]
+    elif isinstance(foreshadowing, str):
+        text = foreshadowing.strip()
+        payload["foreshadowing"] = [{"content": text}] if text else []
+    elif isinstance(foreshadowing, list):
+        normalized_foreshadowing = []
+        for item in foreshadowing:
+            if isinstance(item, dict):
+                normalized_foreshadowing.append(item)
+            elif isinstance(item, str):
+                text = item.strip()
+                if text:
+                    normalized_foreshadowing.append({"content": text})
+        payload["foreshadowing"] = normalized_foreshadowing
+    else:
+        payload["foreshadowing"] = []
+
+    scenes = payload.get("scenes")
+    if scenes is None:
+        pass
+    elif isinstance(scenes, dict):
+        payload["scenes"] = [scenes]
+    elif isinstance(scenes, list):
+        payload["scenes"] = [item for item in scenes if isinstance(item, dict)]
+    else:
+        payload["scenes"] = []
 
     payload.setdefault("scenes_chunked", 0)
     return payload

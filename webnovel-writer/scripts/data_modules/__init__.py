@@ -14,8 +14,20 @@ Data Modules - 数据链模块包。
 
 from __future__ import annotations
 
+import sys
 from importlib import import_module
+from pathlib import Path
 from typing import Any
+
+
+_PACKAGE_DIR = Path(__file__).resolve().parent
+for _base in (_PACKAGE_DIR, *_PACKAGE_DIR.parents):
+    _pydeps = _base / ".pydeps"
+    if _pydeps.is_dir():
+        _pydeps_str = str(_pydeps)
+        if _pydeps_str not in sys.path:
+            sys.path.insert(0, _pydeps_str)
+        break
 
 
 __all__ = [
@@ -103,4 +115,3 @@ def __getattr__(name: str) -> Any:  # pragma: no cover
 
 def __dir__() -> list[str]:  # pragma: no cover
     return sorted(set(list(globals().keys()) + list(_LAZY_EXPORTS.keys())))
-

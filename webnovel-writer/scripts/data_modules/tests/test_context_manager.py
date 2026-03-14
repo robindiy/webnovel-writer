@@ -97,6 +97,28 @@ def test_context_manager_build_and_filter(temp_project):
     assert payload["sections"]["preferences"]["content"].get("tone") == "热血"
 
 
+def test_context_manager_checklist_score_does_not_penalize_cold_start(temp_project):
+    state = {
+        "project_info": {"genre": "都市日常"},
+        "protagonist_state": {"name": "林小天"},
+        "chapter_meta": {},
+        "disambiguation_warnings": [],
+        "disambiguation_pending": [],
+    }
+    temp_project.state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    manager = ContextManager(temp_project)
+    payload = manager.build_context(1, use_snapshot=False, save_snapshot=False)
+
+    guidance = payload["sections"]["writing_guidance"]["content"]
+    checklist_score = guidance.get("checklist_score") or {}
+    pending_items = checklist_score.get("pending_items") or []
+
+    assert float(checklist_score.get("required_completion_rate") or 0.0) == 1.0
+    assert float(checklist_score.get("score") or 0.0) >= 80.0
+    assert not any("最近审查均分0.0" in str(item) for item in pending_items)
+
+
 def test_query_router():
     router = QueryRouter()
     assert router.route("角色是谁") == "entity"

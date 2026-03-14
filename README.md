@@ -72,20 +72,27 @@ git clone <your-repo-url>
 cd webnovel-writer
 ```
 
-### 2) 安装 Python 依赖
+### 2) 初始化本地 Python 环境
 
 ```bash
-python3 -m pip install -r requirements.txt
+./scripts/bootstrap_env.sh
 ```
 
-说明：该入口会同时安装核心写作链路与 Dashboard 依赖，供 Codex 版本使用。
+说明：该入口会创建/复用仓库根目录下的 `.venv/`，并安装核心写作链路与 Dashboard 依赖。
+
+后续在仓库里优先使用这两个命令入口，避免误用系统 Python：
+
+```bash
+./scripts/py -m pytest
+./scripts/pytest-local webnovel-writer/scripts/data_modules/tests/test_state_manager_extra.py
+```
 
 ### 3) 先跑临时烟测（推荐）
 
 这一步不会污染真实 `~/.codex`，只是先验证当前仓库的 Codex 安装链路是否正常：
 
 ```bash
-python3 scripts/smoke_test_codex_support.py
+./scripts/py scripts/smoke_test_codex_support.py
 ```
 
 ### 4) 安装 Codex 支持
@@ -93,7 +100,7 @@ python3 scripts/smoke_test_codex_support.py
 执行：
 
 ```bash
-python3 scripts/install_codex_support.py
+./scripts/py scripts/install_codex_support.py
 ```
 
 安装完成后会：
@@ -256,11 +263,13 @@ git push origin feature/your-feature
 - 安装脚本：`scripts/install_codex_support.py`
 - Skill 包：`codex-skills/webnovel-writer`
 - shell fallback：`~/.codex/bin/webnovel-codex`
+- TUI 初始化快捷命令：`~/.codex/bin/webnovel-init`
 
 兼容策略：
 
 - **Codex 对话优先保留原 slash 命令**
 - **纯 shell 提供 `webnovel-codex` fallback**
+- **字段很多的初始化场景提供 `webnovel-init` TUI 快捷入口**
 - **底层复用上游核心脚本、工作流和 Dashboard 服务**
 
 对外命令契约以 `/webnovel-writer:*` 为准，便于开源维护和跨运行时对齐。
