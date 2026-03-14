@@ -3,6 +3,7 @@
 本目录承载 `README.md` 之外的详细说明，按模块拆分：
 
 - [架构与模块](#架构与模块)
+- [AI / Agent 操作](#ai--agent-操作)
 - [Codex 安装](#codex-安装)
 - [命令详解](#命令详解)
 - [RAG 与配置](#rag-与配置)
@@ -13,6 +14,10 @@
 ## 架构与模块
 
 - `architecture.md`：系统架构、核心理念、双 Agent、六维审查
+
+## AI / Agent 操作
+
+- `ai-operator-guide.md`：面向 AI / Codex / 自动化代理的硬约束操作文档（入口、路径、章节落盘、dashboard、多书切换）
 
 ## Codex 安装
 

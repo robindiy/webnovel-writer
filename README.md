@@ -20,6 +20,7 @@
 详细文档已拆分到 `docs/`：
 
 - Codex 安装：`docs/codex-install.md`
+- AI / Agent 操作：`docs/ai-operator-guide.md`
 - 架构与模块：`docs/architecture.md`
 - 命令详解：`docs/commands.md`
 - RAG 与配置：`docs/rag-and-config.md`
